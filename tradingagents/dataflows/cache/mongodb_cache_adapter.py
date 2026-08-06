@@ -35,8 +35,12 @@ class MongoDBCacheAdapter:
             from tradingagents.config.database_manager import get_mongodb_client
             self.mongodb_client = get_mongodb_client()
             if self.mongodb_client:
-                self.db = self.mongodb_client.get_database('tradingagents')
-                logger.debug("✅ MongoDB连接初始化成功")
+                from tradingagents.config.database_manager import get_database_manager
+
+                self.db = get_database_manager().get_mongodb_db()
+                if self.db is None:
+                    raise RuntimeError("无法从数据库配置获取 MongoDB 数据库实例")
+                logger.debug(f"✅ MongoDB连接初始化成功: {self.db.name}")
             else:
                 logger.warning("⚠️ MongoDB客户端不可用，回退到传统模式")
                 self.use_app_cache = False

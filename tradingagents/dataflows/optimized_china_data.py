@@ -851,8 +851,9 @@ class OptimizedChinaDataProvider:
 
             if db_manager.is_mongodb_available():
                 try:
-                    db_client = db_manager.get_mongodb_client()
-                    db = db_client['tradingagents']
+                    db = db_manager.get_mongodb_db()
+                    if db is None:
+                        raise RuntimeError("无法从数据库配置获取 MongoDB 数据库实例")
 
                     # 标准化股票代码为6位
                     code6 = symbol.replace('.SH', '').replace('.SZ', '').zfill(6)
@@ -901,14 +902,14 @@ class OptimizedChinaDataProvider:
             akshare_provider = get_akshare_provider()
 
             if akshare_provider.connected:
-                # AKShare的get_financial_data是异步方法，需要使用asyncio运行
-                loop = asyncio.get_event_loop()
-                financial_data = loop.run_until_complete(akshare_provider.get_financial_data(symbol))
+                # This method is invoked from the synchronous analysis worker.
+                # asyncio.run creates the worker-local loop required by the provider.
+                financial_data = asyncio.run(akshare_provider.get_financial_data(symbol))
 
                 if financial_data and any(not v.empty if hasattr(v, 'empty') else bool(v) for v in financial_data.values()):
                     logger.info(f"✅ AKShare财务数据获取成功: {symbol}")
                     # 获取股票基本信息（也是异步方法）
-                    stock_info = loop.run_until_complete(akshare_provider.get_stock_basic_info(symbol))
+                    stock_info = asyncio.run(akshare_provider.get_stock_basic_info(symbol))
 
                     # 解析AKShare财务数据
                     logger.debug(f"🔧 调用AKShare解析函数，股价: {price_value}")
@@ -937,14 +938,13 @@ class OptimizedChinaDataProvider:
                 return None
 
             # 获取财务数据（异步方法）
-            loop = asyncio.get_event_loop()
-            financial_data = loop.run_until_complete(provider.get_financial_data(symbol))
+            financial_data = asyncio.run(provider.get_financial_data(symbol))
             if not financial_data:
                 logger.debug(f"未获取到{symbol}的财务数据")
                 return None
 
             # 获取股票基本信息（异步方法）
-            stock_info = loop.run_until_complete(provider.get_stock_basic_info(symbol))
+            stock_info = asyncio.run(provider.get_stock_basic_info(symbol))
 
             # 解析Tushare财务数据
             metrics = self._parse_financial_data(financial_data, stock_info, price_value)
@@ -2167,13 +2167,11 @@ def _add_financial_cache_methods():
     def _get_cached_raw_financial_data(self, symbol: str) -> dict:
         """从数据库缓存获取原始财务数据"""
         try:
-            from .cache.app_adapter import get_mongodb_client
-            client = get_mongodb_client()
-            if not client:
+            from tradingagents.config.database_manager import get_database_manager
+            db = get_database_manager().get_mongodb_db()
+            if db is None:
                 logger.debug(f"📊 [财务缓存] MongoDB客户端不可用")
                 return None
-
-            db = client.get_database('tradingagents')
 
             # 第一优先级：从 stock_financial_data 集合读取（定时任务同步的持久化数据）
             stock_financial_collection = db.stock_financial_data
@@ -2269,12 +2267,10 @@ def _add_financial_cache_methods():
     def _get_cached_stock_info(self, symbol: str) -> dict:
         """从数据库缓存获取股票基本信息"""
         try:
-            from .cache.app_adapter import get_mongodb_client
-            client = get_mongodb_client()
-            if not client:
+            from tradingagents.config.database_manager import get_database_manager
+            db = get_database_manager().get_mongodb_db()
+            if db is None:
                 return {}
-
-            db = client.get_database('tradingagents')
             collection = db.stock_basic_info
 
             # 查找股票基本信息
@@ -2318,13 +2314,11 @@ def _add_financial_cache_methods():
                 logger.debug(f"📊 [财务缓存] 应用缓存未启用，跳过缓存保存")
                 return
 
-            from .cache.app_adapter import get_mongodb_client
-            client = get_mongodb_client()
-            if not client:
+            from tradingagents.config.database_manager import get_database_manager
+            db = get_database_manager().get_mongodb_db()
+            if db is None:
                 logger.debug(f"📊 [财务缓存] MongoDB客户端不可用")
                 return
-
-            db = client.get_database('tradingagents')
             collection = db.financial_data_cache
 
             from datetime import datetime

@@ -4,6 +4,7 @@
 统一管理三数据源的财务数据存储和查询
 """
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import pandas as pd
@@ -113,6 +114,20 @@ class FinancialDataService:
                 logger.warning(f"⚠️ {symbol} 财务数据标准化后为空")
                 return 0
             
+            # Remove metadata-only AKShare placeholders once actual metrics arrive.
+            if data_source == "akshare" and any(
+                standardized_data.get(field) is not None
+                for field in ("revenue", "net_income", "roe", "debt_to_assets", "total_assets")
+            ):
+                await collection.delete_many({
+                    "symbol": symbol,
+                    "data_source": "akshare",
+                    "$and": [
+                        {field: None}
+                        for field in ("revenue", "net_income", "roe", "debt_to_assets", "total_assets")
+                    ],
+                })
+
             # 批量操作
             operations = []
             saved_count = 0
@@ -382,7 +397,22 @@ class FinancialDataService:
         }
 
         # 提取关键财务指标
-        base_data.update(self._extract_akshare_indicators(financial_data))
+        indicators = self._extract_akshare_indicators(financial_data)
+        base_data.update(indicators)
+        logger.info(
+            "AKShare financial metrics standardized: %s period=%s fields=%s",
+            symbol,
+            base_data["report_period"],
+            sorted(indicators),
+        )
+        if not indicators:
+            sample = financial_data.get("main_indicators", [])
+            sample_keys = list(sample[0].keys()) if sample and isinstance(sample[0], dict) else []
+            logger.warning(
+                "AKShare returned no recognized financial metrics for %s; first-row columns=%s",
+                symbol,
+                sample_keys,
+            )
         return base_data
     
     def _standardize_baostock_data(
@@ -514,6 +544,83 @@ class FinancialDataService:
 
 
 # 全局服务实例
+    # AKShare's financial abstract is a wide table: metric names are rows and
+    # report dates are columns. These definitions intentionally supersede the
+    # legacy row-oriented extractors above.
+    def _get_akshare_period_column(self, records: Any) -> tuple[Optional[str], Optional[str]]:
+        if not isinstance(records, list) or not records:
+            return None, None
+
+        candidates = []
+        today = datetime.now().date()
+        for column in records[0].keys():
+            normalized = str(column).replace("-", "").replace("/", "")
+            if not re.fullmatch(r"\d{8}", normalized):
+                continue
+            try:
+                report_date = datetime.strptime(normalized, "%Y%m%d").date()
+            except ValueError:
+                continue
+            if report_date <= today:
+                candidates.append((report_date, normalized, column))
+
+        if not candidates:
+            return None, None
+        _, period, column = max(candidates, key=lambda item: item[0])
+        return period, column
+
+    def _extract_latest_period(self, financial_data: Dict[str, Any]) -> str:
+        for key in ("main_indicators", "balance_sheet", "income_statement"):
+            period, _ = self._get_akshare_period_column(financial_data.get(key))
+            if period:
+                return period
+        return self._generate_current_period()
+
+    def _get_akshare_metric(
+        self, records: Any, names: tuple[str, ...]
+    ) -> Optional[float]:
+        if not isinstance(records, list):
+            return None
+
+        _, period_column = self._get_akshare_period_column(records)
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            metric_name = str(
+                record.get("\u6307\u6807") or record.get("\u6307\u6807\u540d\u79f0") or ""
+            ).strip()
+            if metric_name in names and period_column:
+                value = self._safe_float(record.get(period_column))
+                if value is not None:
+                    return value
+            for name in names:
+                value = self._safe_float(record.get(name))
+                if value is not None:
+                    return value
+        return None
+
+    def _extract_akshare_indicators(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+        main = financial_data.get("main_indicators", [])
+        balance = financial_data.get("balance_sheet", [])
+        indicators = {
+            "revenue": self._get_akshare_metric(main, ("\u8425\u4e1a\u603b\u6536\u5165(\u5143)", "\u8425\u4e1a\u6536\u5165(\u5143)", "\u8425\u4e1a\u6536\u5165")),
+            "net_income": self._get_akshare_metric(main, ("\u5f52\u5c5e\u51c0\u5229\u6da6(\u5143)", "\u51c0\u5229\u6da6(\u5143)", "\u51c0\u5229\u6da6")),
+            "total_assets": self._get_akshare_metric(main, ("\u603b\u8d44\u4ea7(\u5143)", "\u603b\u8d44\u4ea7")),
+            "total_equity": self._get_akshare_metric(main, ("\u80a1\u4e1c\u6743\u76ca\u5408\u8ba1(\u5143)", "\u80a1\u4e1c\u6743\u76ca\u5408\u8ba1")),
+            "roe": self._get_akshare_metric(main, ("\u51c0\u8d44\u4ea7\u6536\u76ca\u7387(%)", "\u51c0\u8d44\u4ea7\u6536\u76ca\u7387(ROE)", "\u51c0\u8d44\u4ea7\u6536\u76ca\u7387")),
+            "debt_to_assets": self._get_akshare_metric(main, ("\u8d44\u4ea7\u8d1f\u503a\u7387(%)", "\u8d44\u4ea7\u8d1f\u503a\u7387", "\u8d1f\u503a\u7387")),
+            "total_liab": self._get_akshare_metric(balance, ("\u8d1f\u503a\u5408\u8ba1", "TOTAL_LIABILITIES")),
+            "cash_and_equivalents": self._get_akshare_metric(balance, ("\u8d27\u5e01\u8d44\u91d1", "MONETARYFUNDS")),
+        }
+        if indicators["total_assets"] is None:
+            indicators["total_assets"] = self._get_akshare_metric(balance, ("\u8d44\u4ea7\u603b\u8ba1", "\u603b\u8d44\u4ea7", "TOTAL_ASSETS"))
+        if indicators["total_equity"] is None:
+            indicators["total_equity"] = self._get_akshare_metric(balance, ("\u6240\u6709\u8005\u6743\u76ca\u5408\u8ba1", "\u80a1\u4e1c\u6743\u76ca\u5408\u8ba1", "TOTAL_EQUITY"))
+        if indicators["debt_to_assets"] is None and indicators["total_liab"] is not None and indicators["total_assets"]:
+            indicators["debt_to_assets"] = indicators["total_liab"] / indicators["total_assets"] * 100
+        return {key: value for key, value in indicators.items() if value is not None}
+
+
 _financial_data_service = None
 
 
