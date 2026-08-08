@@ -113,7 +113,13 @@ class UnifiedNewsAnalyzer:
                 logger.warning(f"[统一新闻工具] 无法连接到MongoDB")
                 return ""
 
-            db = client.get_database('tradingagents')
+            from tradingagents.config.database_manager import get_database_manager
+
+            db = get_database_manager().get_mongodb_db()
+            if db is None:
+                logger.warning("[UnifiedNewsTool] MongoDB database is unavailable")
+                return ""
+            logger.debug("[UnifiedNewsTool] Reading news from MongoDB database: %s", db.name)
             collection = db.stock_news
 
             # 标准化股票代码（去除后缀）

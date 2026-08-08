@@ -391,7 +391,39 @@ def create_news_analyst(llm, toolkit):
                     report = result.content if hasattr(result, 'content') else ""
             else:
                 # 有工具调用，直接使用结果
-                report = result.content
+                # NormalizedChatOpenAI returns a tool-call envelope but does not
+                # execute the tool. Execute it here before asking for the report.
+                try:
+                    tool_call = result.tool_calls[0]
+                    tool_args = dict(tool_call.get("args") or {})
+                    tool_args["stock_code"] = ticker
+                    tool_args["max_news"] = min(int(tool_args.get("max_news", 10)), 20)
+                    tool_args["model_info"] = model_info
+
+                    logger.info(
+                        "[News Analyst] Executing requested news tool: %s",
+                        tool_call.get("name", "get_stock_news_unified"),
+                    )
+                    news_data = unified_news_tool(**tool_args)
+                    if news_data and len(news_data.strip()) > 100:
+                        analysis_result = llm.invoke([
+                            {
+                                "role": "system",
+                                "content": "You are a financial news analyst. Base the report only on the supplied news data.",
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Analyze news for {ticker} ({company_name}):\n\n{news_data}",
+                            },
+                        ])
+                        report = analysis_result.content if hasattr(analysis_result, "content") else str(analysis_result)
+                        logger.info("[News Analyst] News tool executed and report generated: %s chars", len(report))
+                    else:
+                        logger.warning("[News Analyst] News tool returned no usable items for %s", ticker)
+                        report = result.content if hasattr(result, "content") else ""
+                except Exception as tool_error:
+                    logger.error("[News Analyst] Tool execution failed: %s", tool_error, exc_info=True)
+                    report = result.content if hasattr(result, "content") else ""
         
         total_time_taken = (datetime.now() - start_time).total_seconds()
         logger.info(f"[新闻分析师] 新闻分析完成，总耗时: {total_time_taken:.2f}秒")
