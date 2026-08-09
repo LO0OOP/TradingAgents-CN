@@ -223,16 +223,47 @@ async def _get_last_price(code: str, market: str) -> Optional[float]:
         # 2. 回退到 stock_basic_info 的 current_price
         basic_info = await db["stock_basic_info"].find_one(
             {"$or": [{"code": code}, {"symbol": code}]},
-            {"_id": 0, "current_price": 1}
+            {"_id": 0, "current_price": 1, "close": 1, "price": 1, "last_price": 1}
         )
-        if basic_info and basic_info.get("current_price") is not None:
+        if basic_info:
+            for field in ("current_price", "close", "price", "last_price"):
+                try:
+                    price = float(basic_info[field])
+                    if price > 0:
+                        logger.debug(f"✅ 从 stock_basic_info.{field} 获取价格: {code} = {price}")
+                        return price
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+        # Real-time providers are unavailable outside trading hours or may be
+        # temporarily blocked. A simulated order can safely use the latest
+        # persisted daily close instead of failing outright.
+        code6 = _zfill_code(code)
+        full_symbol = f"{code6}.SH" if code6.startswith("6") else f"{code6}.SZ"
+        daily_quote = await db["stock_daily_quotes"].find_one(
+            {
+                "$or": [
+                    {"code": code6},
+                    {"symbol": code6},
+                    {"full_symbol": full_symbol},
+                    {"ts_code": full_symbol},
+                ]
+            },
+            {"_id": 0, "close": 1, "trade_date": 1, "date": 1},
+            sort=[("trade_date", -1), ("date", -1), ("updated_at", -1)],
+        )
+        if daily_quote and daily_quote.get("close") is not None:
             try:
-                price = float(basic_info["current_price"])
+                price = float(daily_quote["close"])
                 if price > 0:
-                    logger.debug(f"✅ 从 stock_basic_info 获取价格: {code} = {price}")
+                    logger.info(
+                        "Using latest daily close for paper order: %s = %s",
+                        code6,
+                        price,
+                    )
                     return price
-            except Exception as e:
-                logger.warning(f"⚠️ stock_basic_info 价格转换失败 {code}: {e}")
+            except (TypeError, ValueError):
+                logger.warning("Invalid daily close for paper order: %s", code6)
 
         logger.error(f"❌ 无法从数据库获取A股价格: {code}")
         return None

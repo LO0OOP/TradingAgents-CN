@@ -69,7 +69,7 @@ export const favoritesApi = {
    * 同步自选股实时行情
    * @param data_source 数据源（tushare/akshare）
    */
-  syncRealtime: (data_source: string = 'tushare') =>
+  syncRealtime: (data_source: string = 'akshare') =>
     ApiClient.post<{
       total: number
       success_count: number
@@ -79,4 +79,3 @@ export const favoritesApi = {
       message: string
     }>('/api/favorites/sync-realtime', { data_source })
 }
-

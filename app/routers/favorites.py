@@ -217,7 +217,7 @@ async def get_user_tags(
 
 class SyncFavoritesRequest(BaseModel):
     """同步自选股实时行情请求"""
-    data_source: str = "tushare"  # tushare/akshare
+    data_source: str = "akshare"  # tushare/akshare
 
 
 @router.post("/sync-realtime", response_model=dict)

@@ -290,6 +290,9 @@ class AKShareAdapter(DataSourceAdapter):
 
         except Exception as e:
             logger.error(f"获取AKShare {source} 实时快照失败: {e}")
+            if source == "eastmoney":
+                logger.info("AKShare eastmoney failed; retrying the Sina quote endpoint")
+                return self.get_realtime_quotes(source="sina")
             return None
 
     def get_kline(self, code: str, period: str = "day", limit: int = 120, adj: Optional[str] = None):
@@ -389,4 +392,3 @@ class AKShareAdapter(DataSourceAdapter):
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
         logger.info(f"AKShare: Using yesterday as trade date: {yesterday}")
         return yesterday
-
