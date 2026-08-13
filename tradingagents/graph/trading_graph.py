@@ -588,12 +588,22 @@ class TradingAgentsGraph:
         # Initialize memories (如果启用)
         memory_enabled = self.config.get("memory_enabled", True)
         if memory_enabled:
-            # 使用单例ChromaDB管理器，避免并发创建冲突
-            self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
-            self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
-            self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
-            self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", self.config)
-            self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", self.config)
+            try:
+                # 使用单例ChromaDB管理器，避免并发创建冲突
+                self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
+                self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
+                self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
+                self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", self.config)
+                self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", self.config)
+            except Exception as e:
+                # Historical memory improves context but must not make an
+                # otherwise valid market analysis fail, especially in batches.
+                logger.warning("⚠️ 记忆库初始化失败，已禁用本次分析记忆功能: %s", e)
+                self.bull_memory = None
+                self.bear_memory = None
+                self.trader_memory = None
+                self.invest_judge_memory = None
+                self.risk_manager_memory = None
         else:
             # 创建空的内存对象
             self.bull_memory = None

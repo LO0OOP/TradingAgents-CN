@@ -2402,6 +2402,9 @@ class USDataSourceManager:
             name_mapping = {
                 'alpha vantage': 'alpha_vantage',
                 'yahoo finance': 'yfinance',
+                # The settings UI stores the enum value, while older records used
+                # the display name. Normalize both forms for the US source manager.
+                'yahoo_finance': 'yfinance',
                 'finnhub': 'finnhub',
             }
 

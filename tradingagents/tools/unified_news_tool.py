@@ -6,7 +6,7 @@
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 logger = logging.getLogger(__name__)
@@ -373,15 +373,38 @@ class UnifiedNewsAnalyzer:
     def _get_hk_share_news(self, stock_code: str, max_news: int, model_info: str = "") -> str:
         """获取港股新闻"""
         logger.info(f"[统一新闻工具] 获取港股 {stock_code} 新闻")
-        
+
         # 获取当前日期
         curr_date = datetime.now().strftime("%Y-%m-%d")
+
+        # Finnhub uses the exchange-qualified Yahoo-style ticker for Hong Kong.
+        hk_code = stock_code.upper().replace(".HK", "")
+        finnhub_symbol = f"{hk_code.zfill(5)}.HK"
+
+        # 优先级1: FinnHub新闻
+        try:
+            if hasattr(self.toolkit, 'get_finnhub_news'):
+                logger.info(
+                    f"[统一新闻工具] 尝试FinnHub港股新闻: {stock_code} -> {finnhub_symbol}"
+                )
+                start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+                result = self.toolkit.get_finnhub_news.invoke({
+                    "ticker": finnhub_symbol,
+                    "start_date": start_date,
+                    "end_date": curr_date,
+                })
+                if result and len(result.strip()) > 50 and "无法获取" not in result:
+                    logger.info(f"[统一新闻工具] ✅ FinnHub港股新闻获取成功: {len(result)} 字符")
+                    return self._format_news_result(result, "FinnHub港股新闻", model_info)
+                logger.info(f"[统一新闻工具] FinnHub港股新闻未返回有效内容: {finnhub_symbol}")
+        except Exception as e:
+            logger.warning(f"[统一新闻工具] FinnHub港股新闻获取失败: {finnhub_symbol}, {e}")
         
-        # 优先级1: Google新闻（港股搜索）
+        # 优先级2: Google新闻（港股搜索）
         try:
             if hasattr(self.toolkit, 'get_google_news'):
                 logger.info(f"[统一新闻工具] 尝试Google港股新闻...")
-                query = f"{stock_code} 港股 香港股票 新闻"
+                query = f"{finnhub_symbol} {stock_code} 港股 香港股票 新闻 财报 业绩"
                 # 使用LangChain工具的正确调用方式：.invoke()方法和字典参数
                 result = self.toolkit.get_google_news.invoke({"query": query, "curr_date": curr_date})
                 if result and len(result.strip()) > 50:
@@ -390,7 +413,7 @@ class UnifiedNewsAnalyzer:
         except Exception as e:
             logger.warning(f"[统一新闻工具] Google港股新闻获取失败: {e}")
         
-        # 优先级2: OpenAI全球新闻
+        # 优先级3: OpenAI全球新闻
         try:
             if hasattr(self.toolkit, 'get_global_news_openai'):
                 logger.info(f"[统一新闻工具] 尝试OpenAI港股新闻...")
@@ -402,7 +425,7 @@ class UnifiedNewsAnalyzer:
         except Exception as e:
             logger.warning(f"[统一新闻工具] OpenAI港股新闻获取失败: {e}")
         
-        # 优先级3: 实时新闻（如果支持港股）
+        # 优先级4: 实时新闻（如果支持港股）
         try:
             if hasattr(self.toolkit, 'get_realtime_stock_news'):
                 logger.info(f"[统一新闻工具] 尝试实时港股新闻...")
@@ -452,8 +475,13 @@ class UnifiedNewsAnalyzer:
         try:
             if hasattr(self.toolkit, 'get_finnhub_news'):
                 logger.info(f"[统一新闻工具] 尝试FinnHub美股新闻...")
-                # 使用LangChain工具的正确调用方式：.invoke()方法和字典参数
-                result = self.toolkit.get_finnhub_news.invoke({"symbol": stock_code, "max_results": min(max_news, 50)})
+                start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+                # Toolkit.get_finnhub_news expects a ticker and an explicit date range.
+                result = self.toolkit.get_finnhub_news.invoke({
+                    "ticker": stock_code,
+                    "start_date": start_date,
+                    "end_date": curr_date,
+                })
                 if result and len(result.strip()) > 50:
                     logger.info(f"[统一新闻工具] ✅ FinnHub美股新闻获取成功: {len(result)} 字符")
                     return self._format_news_result(result, "FinnHub美股新闻", model_info)

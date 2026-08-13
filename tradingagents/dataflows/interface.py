@@ -240,6 +240,38 @@ def get_finnhub_news(
     before = start_date - relativedelta(days=look_back_days)
     before = before.strftime("%Y-%m-%d")
 
+    # Prefer the live Finnhub endpoint when a key is configured. The old cache
+    # path remains as a fallback for offline use and historic cached analyses.
+    api_key = os.getenv("FINNHUB_API_KEY")
+    if api_key:
+        try:
+            import requests
+
+            response = requests.get(
+                "https://finnhub.io/api/v1/company-news",
+                params={"symbol": ticker, "from": before, "to": curr_date, "token": api_key},
+                timeout=20,
+            )
+            response.raise_for_status()
+            articles = response.json()
+            if isinstance(articles, list) and articles:
+                news_items = []
+                for article in articles[:50]:
+                    headline = article.get("headline") or "Untitled"
+                    summary = article.get("summary") or ""
+                    source = article.get("source") or "Finnhub"
+                    published_at = article.get("datetime")
+                    published = ""
+                    if isinstance(published_at, (int, float)):
+                        published = datetime.fromtimestamp(published_at).strftime("%Y-%m-%d")
+                    news_items.append(f"### {headline} ({source}, {published})\n{summary}")
+
+                logger.info("[Finnhub新闻] 获取 %s 条实时新闻: %s", len(news_items), ticker)
+                return f"## {ticker} News, from {before} to {curr_date}:\n\n" + "\n\n".join(news_items)
+            logger.info("[Finnhub新闻] 未返回实时新闻: %s", ticker)
+        except Exception as e:
+            logger.warning("[Finnhub新闻] 实时请求失败，尝试本地缓存: %s", e)
+
     result = get_data_in_range(ticker, before, curr_date, "news_data", DATA_DIR)
 
     if len(result) == 0:

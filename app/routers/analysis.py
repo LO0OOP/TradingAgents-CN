@@ -17,6 +17,7 @@ from app.services.queue_service import get_queue_service, QueueService
 from app.services.analysis_service import get_analysis_service
 from app.services.simple_analysis_service import get_simple_analysis_service
 from app.services.websocket_manager import get_websocket_manager
+from tradingagents.utils.stock_utils import StockUtils
 from app.models.analysis import (
     SingleAnalysisRequest, BatchAnalysisRequest, AnalysisParameters,
     AnalysisTaskResponse, AnalysisBatchResponse, AnalysisHistoryQuery
@@ -24,6 +25,34 @@ from app.models.analysis import (
 
 router = APIRouter()
 logger = logging.getLogger("webapi")
+
+
+def _build_batch_single_request(
+    symbol: str,
+    parameters: Optional[AnalysisParameters],
+) -> SingleAnalysisRequest:
+    """Create an isolated request with the market inferred from its own symbol."""
+    market_map = {
+        "china_a": "A股",
+        "hong_kong": "港股",
+        "us": "美股",
+    }
+    market_info = StockUtils.get_market_info(symbol)
+    inferred_market = market_map.get(market_info.get("market"))
+
+    # A batch may mix A-share, HK, and US symbols. Reusing one shared
+    # parameters object would otherwise validate every task as the default A股.
+    task_parameters = parameters.model_copy(deep=True) if parameters else AnalysisParameters()
+    if inferred_market:
+        task_parameters.market_type = inferred_market
+    else:
+        logger.warning("⚠️ [批量分析] 无法识别市场，保留请求市场类型: %s - %s", symbol, task_parameters.market_type)
+
+    return SingleAnalysisRequest(
+        symbol=symbol,
+        stock_code=symbol,
+        parameters=task_parameters,
+    )
 
 # 兼容性：保留原有的请求模型
 class SingleAnalyzeRequest(BaseModel):
@@ -803,11 +832,7 @@ async def submit_batch_analysis(
         for i, symbol in enumerate(stock_symbols):
             logger.info(f"📝 [批量分析] 正在创建第 {i+1}/{len(stock_symbols)} 个任务: {symbol}")
 
-            single_req = SingleAnalysisRequest(
-                symbol=symbol,
-                stock_code=symbol,  # 兼容字段
-                parameters=request.parameters
-            )
+            single_req = _build_batch_single_request(symbol, request.parameters)
 
             try:
                 create_res = await simple_service.create_analysis_task(user["id"], single_req)
@@ -828,11 +853,7 @@ async def submit_batch_analysis(
             tasks = []
             for i, symbol in enumerate(stock_symbols):
                 task_id = task_ids[i]
-                single_req = SingleAnalysisRequest(
-                    symbol=symbol,
-                    stock_code=symbol,
-                    parameters=request.parameters
-                )
+                single_req = _build_batch_single_request(symbol, request.parameters)
 
                 # 创建异步任务
                 async def run_single_analysis(tid: str, req: SingleAnalysisRequest, uid: str):

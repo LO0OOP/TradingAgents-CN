@@ -30,7 +30,15 @@ class ChromaDBManager:
         return cls._instance
 
     def __init__(self):
-        if not self._initialized:
+        if self._initialized:
+            return
+
+        # __new__ protects instance creation, but multiple analysis threads can
+        # still enter __init__ together. Chroma's global client setup is not
+        # safe to initialize concurrently.
+        with self._lock:
+            if self._initialized:
+                return
             try:
                 # 使用统一的配置模块
                 from .chromadb_config import get_optimal_chromadb_client, is_windows_11
