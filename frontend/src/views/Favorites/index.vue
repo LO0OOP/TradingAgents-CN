@@ -88,6 +88,13 @@
               <el-icon><Download /></el-icon>
               批量同步数据
             </el-button>
+            <el-button
+              type="primary"
+              :disabled="selectedStocks.length === 0"
+              @click="batchAnalyzeSelected"
+            >
+              批量分析 ({{ selectedStocks.length }})
+            </el-button>
             <el-button @click="openTagManager">
               标签管理
             </el-button>
@@ -1020,6 +1027,22 @@ const viewStockDetail = (row: any) => {
 // 处理表格选择变化
 const handleSelectionChange = (selection: FavoriteItem[]) => {
   selectedStocks.value = selection
+}
+
+const batchAnalyzeSelected = () => {
+  const codes = selectedStocks.value
+    .map(item => String(item.stock_code || item.symbol || '').trim())
+    .filter(Boolean)
+
+  if (!codes.length) {
+    ElMessage.warning('请选择要分析的股票')
+    return
+  }
+
+  router.push({
+    name: 'BatchAnalysis',
+    query: { stocks: [...new Set(codes)].join(',') }
+  })
 }
 
 // 显示单个股票同步对话框

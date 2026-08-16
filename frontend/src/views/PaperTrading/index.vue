@@ -103,9 +103,24 @@
               <span style="margin-left: 8px; font-size: 12px; color: #909399; font-weight: normal">
                 ({{ filteredPositions.length }} 个)
               </span>
+              <el-button
+                size="small"
+                type="primary"
+                :disabled="selectedPositions.length === 0"
+                style="margin-left: auto"
+                @click="batchAnalyzePositions"
+              >
+                批量分析 ({{ selectedPositions.length }})
+              </el-button>
             </div>
           </template>
-          <el-table :data="filteredPositions" size="small" v-loading="loading.positions">
+          <el-table
+            :data="filteredPositions"
+            size="small"
+            v-loading="loading.positions"
+            @selection-change="handlePositionSelectionChange"
+          >
+            <el-table-column type="selection" width="45" />
             <el-table-column label="代码" width="100">
               <template #default="{ row }">
                 <el-link type="primary" @click="viewStockDetail(row.code)">{{ row.code }}</el-link>
@@ -274,6 +289,7 @@ const router = useRouter()
 const account = ref<any | null>(null)
 const positions = ref<any[]>([])
 const orders = ref<any[]>([])
+const selectedPositions = ref<any[]>([])
 const loading = ref({ account: false, positions: false, orders: false })
 
 const orderDialog = ref(false)
@@ -320,6 +336,26 @@ function getCurrencySymbol(currency: string | undefined) {
   if (currency === 'HKD') return 'HK$'
   if (currency === 'USD') return '$'
   return ''
+}
+
+function handlePositionSelectionChange(selection: any[]) {
+  selectedPositions.value = selection
+}
+
+function batchAnalyzePositions() {
+  const codes = selectedPositions.value
+    .map(position => String(position.code || '').trim())
+    .filter(Boolean)
+
+  if (!codes.length) {
+    ElMessage.warning('请选择要分析的持仓股票')
+    return
+  }
+
+  router.push({
+    name: 'BatchAnalysis',
+    query: { stocks: [...new Set(codes)].join(',') }
+  })
 }
 
 // 检测市场类型
@@ -592,5 +628,5 @@ onMounted(() => {
 .paper-trading { padding: 16px; }
 .header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px; }
 .title { display:flex; align-items:center; font-weight: 600; font-size: 16px; }
-.card-hd { font-weight: 600; }
+.card-hd { display: flex; align-items: center; font-weight: 600; }
 </style>
