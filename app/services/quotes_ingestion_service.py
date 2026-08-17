@@ -368,6 +368,7 @@ class QuotesIngestionService:
         db = get_mongo_db()
         coll = db[self.collection_name]
         ops = []
+        industry_ops = []
         updated_at = datetime.now(self.tz)
         for code, q in quotes_map.items():
             if not code:
@@ -396,16 +397,40 @@ class QuotesIngestionService:
                         "high": q.get("high"),
                         "low": q.get("low"),
                         "pre_close": q.get("pre_close"),
+                        "turnover_rate": q.get("turnover_rate"),
+                        "volume_ratio": q.get("volume_ratio"),
+                        "pe": q.get("pe"),
+                        "pe_ttm": q.get("pe_ttm"),
+                        "pb": q.get("pb"),
+                        "total_mv": q.get("total_mv"),
+                        "circ_mv": q.get("circ_mv"),
                         "trade_date": trade_date,
                         "updated_at": updated_at,
                     }},
                     upsert=True,
                 )
             )
+            # 只要行情提供者带有行业字段，就顺便修复基础资料中的空行业。
+            # 不带该字段的快照不会覆盖已有分类。
+            industry = q.get("industry")
+            if industry:
+                industry_ops.append(
+                    UpdateOne(
+                        {"code": code6, "source": "akshare"},
+                        {"$set": {"industry": industry, "updated_at": updated_at}},
+                    )
+                )
         if not ops:
             logger.info("无可写入的数据，跳过")
             return
         result = await coll.bulk_write(ops, ordered=False)
+        if industry_ops:
+            industry_result = await db["stock_basic_info"].bulk_write(industry_ops, ordered=False)
+            logger.info(
+                "✅ 行业分类回写完成 matched=%s, modified=%s",
+                industry_result.matched_count,
+                industry_result.modified_count,
+            )
         logger.info(
             f"✅ 行情入库完成 source={source}, matched={result.matched_count}, upserted={len(result.upserted_ids) if result.upserted_ids else 0}, modified={result.modified_count}"
         )
@@ -671,4 +696,3 @@ class QuotesIngestionService:
                 records_count=0,
                 error_msg=str(e)
             )
-

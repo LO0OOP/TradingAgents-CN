@@ -34,6 +34,9 @@ class BaoStockSyncStats:
 class BaoStockSyncService:
     """BaoStock数据同步服务"""
 
+    # BaoStock 的登录会话不适合被批量分析并发复用；单股按顺序同步更稳定。
+    _single_history_lock: Optional[asyncio.Lock] = None
+
     def __init__(self):
         """
         初始化同步服务
@@ -404,11 +407,51 @@ class BaoStockSyncService:
             
             logger.info(f"✅ BaoStock历史数据同步完成: {stats.historical_records}条记录")
             return stats
-            
+
         except Exception as e:
             logger.error(f"❌ BaoStock历史数据同步失败: {e}")
             stats.errors.append(str(e))
             return stats
+
+    async def sync_single_historical_data(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        period: str = "daily",
+    ) -> Dict[str, Any]:
+        """同步一只股票的历史数据，供分析前的数据准备流程调用。"""
+        if self.db is None:
+            await self.initialize()
+
+        if type(self)._single_history_lock is None:
+            type(self)._single_history_lock = asyncio.Lock()
+
+        try:
+            async with type(self)._single_history_lock:
+                hist_data = await self.provider.get_historical_data(
+                    symbol, start_date, end_date, period
+                )
+                if hist_data is None or hist_data.empty:
+                    return {
+                        "success_count": 0,
+                        "total_records": 0,
+                        "errors": [{"error": "BaoStock未返回历史数据"}],
+                    }
+
+                saved_count = await self._update_historical_data(symbol, hist_data, period)
+                return {
+                    "success_count": 1 if saved_count > 0 else 0,
+                    "total_records": saved_count,
+                    "errors": [] if saved_count > 0 else [{"error": "历史数据保存失败"}],
+                }
+        except Exception as e:
+            logger.error(f"❌ BaoStock单股历史数据同步失败 {symbol}: {e}")
+            return {
+                "success_count": 0,
+                "total_records": 0,
+                "errors": [{"error": str(e)}],
+            }
     
     async def _sync_historical_batch(
         self,

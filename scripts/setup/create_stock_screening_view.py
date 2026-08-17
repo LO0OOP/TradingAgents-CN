@@ -92,13 +92,13 @@ async def create_stock_screening_view():
                     "source": 1,
 
                     # 市值信息
-                    "total_mv": 1,
-                    "circ_mv": 1,
+                    "total_mv": {"$ifNull": ["$total_mv", "$quote_data.total_mv"]},
+                    "circ_mv": {"$ifNull": ["$circ_mv", "$quote_data.circ_mv"]},
 
                     # 估值指标（从 stock_basic_info）
-                    "pe": 1,
-                    "pb": 1,
-                    "pe_ttm": 1,
+                    "pe": {"$ifNull": ["$pe", "$quote_data.pe"]},
+                    "pb": {"$ifNull": ["$pb", "$quote_data.pb"]},
+                    "pe_ttm": {"$ifNull": ["$pe_ttm", "$quote_data.pe_ttm"]},
                     "pb_mrq": 1,
 
                     # 财务指标（从 financial_data 提升到顶层）
@@ -109,8 +109,8 @@ async def create_stock_screening_view():
                     "report_period": "$financial_data.report_period",
 
                     # 交易指标
-                    "turnover_rate": 1,
-                    "volume_ratio": 1,
+                    "turnover_rate": {"$ifNull": ["$turnover_rate", "$quote_data.turnover_rate"]},
+                    "volume_ratio": {"$ifNull": ["$volume_ratio", "$quote_data.volume_ratio"]},
 
                     # 实时行情数据（从 quote_data 提升到顶层）
                     "close": "$quote_data.close",
@@ -222,4 +222,3 @@ async def main():
 if __name__ == "__main__":
     exit_code = asyncio.run(main())
     exit(exit_code)
-

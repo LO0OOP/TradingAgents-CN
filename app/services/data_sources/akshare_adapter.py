@@ -230,6 +230,13 @@ class AKShareAdapter(DataSourceAdapter):
             low_col = next((c for c in ["最低", "low"] if c in df.columns), None)
             pre_close_col = next((c for c in ["昨收", "昨收(元)", "pre_close", "昨收价", "settlement"] if c in df.columns), None)
             volume_col = next((c for c in ["成交量", "成交量(手)", "volume", "成交量(股)", "vol"] if c in df.columns), None)
+            turnover_col = next((c for c in ["换手率", "换手率(%)", "turnover_rate"] if c in df.columns), None)
+            volume_ratio_col = next((c for c in ["量比", "volume_ratio"] if c in df.columns), None)
+            pe_col = next((c for c in ["市盈率-动态", "市盈率", "pe", "pe_ttm"] if c in df.columns), None)
+            pb_col = next((c for c in ["市净率", "pb"] if c in df.columns), None)
+            total_mv_col = next((c for c in ["总市值", "total_mv"] if c in df.columns), None)
+            circ_mv_col = next((c for c in ["流通市值", "circ_mv"] if c in df.columns), None)
+            industry_col = next((c for c in ["所属行业", "行业", "industry"] if c in df.columns), None)
 
             if not code_col or not price_col:
                 logger.error(f"AKShare {source} 缺少必要列: code={code_col}, price={price_col}, columns={list(df.columns)}")
@@ -269,6 +276,16 @@ class AKShareAdapter(DataSourceAdapter):
                 lo = self._safe_float(row.get(low_col)) if low_col else None
                 pre = self._safe_float(row.get(pre_close_col)) if pre_close_col else None
                 vol = self._safe_float(row.get(volume_col)) if volume_col else None
+                turnover_rate = self._safe_float(row.get(turnover_col)) if turnover_col else None
+                volume_ratio = self._safe_float(row.get(volume_ratio_col)) if volume_ratio_col else None
+                pe = self._safe_float(row.get(pe_col)) if pe_col else None
+                pb = self._safe_float(row.get(pb_col)) if pb_col else None
+                total_mv = self._safe_float(row.get(total_mv_col)) if total_mv_col else None
+                circ_mv = self._safe_float(row.get(circ_mv_col)) if circ_mv_col else None
+                industry_value = row.get(industry_col) if industry_col else None
+                industry = str(industry_value).strip() if industry_value is not None else None
+                if industry in ("", "-", "nan", "None"):
+                    industry = None
 
                 # 🔥 日志：记录AKShare返回的成交量
                 if code in ["300750", "000001", "600000"]:  # 只记录几个示例股票
@@ -282,7 +299,16 @@ class AKShareAdapter(DataSourceAdapter):
                     "open": op,
                     "high": hi,
                     "low": lo,
-                    "pre_close": pre
+                    "pre_close": pre,
+                    # 东方财富快照的市值单位为元；筛选模块统一使用亿元。
+                    "turnover_rate": turnover_rate,
+                    "volume_ratio": volume_ratio,
+                    "pe": pe,
+                    "pe_ttm": pe,
+                    "pb": pb,
+                    "total_mv": total_mv / 1e8 if total_mv else None,
+                    "circ_mv": circ_mv / 1e8 if circ_mv else None,
+                    "industry": industry,
                 }
 
             logger.info(f"✅ AKShare {source} 获取到 {len(result)} 只股票的实时行情")

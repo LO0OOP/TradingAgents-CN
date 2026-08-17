@@ -185,7 +185,11 @@ class MongoDBCacheAdapter:
             # 获取数据源优先级
             priority_order = self._get_data_source_priority(symbol)
 
-            # 按优先级查询
+            # 查询全部可用来源。优先级只用于同一最新交易日的裁决；若高优先级
+            # 来源停更，不能让它的旧数据覆盖低优先级来源的最新数据。
+            best_df = None
+            best_source = None
+            best_latest_date = None
             for data_source in priority_order:
                 # 构建查询条件
                 query = {
@@ -209,10 +213,27 @@ class MongoDBCacheAdapter:
 
                 if data:
                     df = pd.DataFrame(data)
-                    logger.info(f"✅ [数据来源: MongoDB-{data_source}] {symbol}, {len(df)}条记录 (period={period})")
-                    return df
+                    latest_dates = pd.to_datetime(df.get("trade_date"), errors="coerce")
+                    latest_date = latest_dates.max() if latest_dates is not None else pd.NaT
+                    if pd.isna(latest_date):
+                        logger.warning(
+                            f"⚠️ [MongoDB-{data_source}] {symbol} 的交易日期无效，跳过该来源"
+                        )
+                        continue
+
+                    if best_latest_date is None or latest_date > best_latest_date:
+                        best_df = df
+                        best_source = data_source
+                        best_latest_date = latest_date
                 else:
                     logger.debug(f"⚠️ [MongoDB-{data_source}] 未找到{period}数据: {symbol}")
+
+            if best_df is not None:
+                logger.info(
+                    f"✅ [数据来源: MongoDB-{best_source}] {symbol}, {len(best_df)}条记录 "
+                    f"(period={period}, latest_trade_date={best_latest_date:%Y-%m-%d})"
+                )
+                return best_df
 
             # 所有数据源都没有数据
             logger.warning(f"⚠️ [数据来源: MongoDB] 所有数据源({', '.join(priority_order)})都没有{period}数据: {symbol}，降级到其他数据源")

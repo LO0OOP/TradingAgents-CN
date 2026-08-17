@@ -310,7 +310,7 @@ async def get_industries(user: dict = Depends(get_current_user)):
             {
                 "$match": {
                     "source": preferred_source,  # 🔥 只查询优先级最高的数据源
-                    "industry": {"$ne": None, "$ne": ""}  # 过滤空行业
+                    "industry": {"$nin": [None, ""]}  # 过滤空行业
                 }
             },
             {

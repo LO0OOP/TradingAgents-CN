@@ -297,12 +297,12 @@ async def create_stock_screening_view(db):
                     "list_date": 1,
                     "source": 1,
                     # 市值信息
-                    "total_mv": 1,
-                    "circ_mv": 1,
+                    "total_mv": {"$ifNull": ["$total_mv", "$quote_data.total_mv"]},
+                    "circ_mv": {"$ifNull": ["$circ_mv", "$quote_data.circ_mv"]},
                     # 估值指标
-                    "pe": 1,
-                    "pb": 1,
-                    "pe_ttm": 1,
+                    "pe": {"$ifNull": ["$pe", "$quote_data.pe"]},
+                    "pb": {"$ifNull": ["$pb", "$quote_data.pb"]},
+                    "pe_ttm": {"$ifNull": ["$pe_ttm", "$quote_data.pe_ttm"]},
                     "pb_mrq": 1,
                     # 财务指标
                     "roe": "$financial_data.roe",
@@ -311,8 +311,8 @@ async def create_stock_screening_view(db):
                     "gross_margin": "$financial_data.gross_margin",
                     "report_period": "$financial_data.report_period",
                     # 交易指标
-                    "turnover_rate": 1,
-                    "volume_ratio": 1,
+                    "turnover_rate": {"$ifNull": ["$turnover_rate", "$quote_data.turnover_rate"]},
+                    "volume_ratio": {"$ifNull": ["$volume_ratio", "$quote_data.volume_ratio"]},
                     # 实时行情数据
                     "close": "$quote_data.close",
                     "open": "$quote_data.open",
@@ -440,4 +440,6 @@ def get_database():
     """获取数据库实例"""
     if db_manager.mongo_client is None:
         raise RuntimeError("MongoDB客户端未初始化")
-    return db_manager.mongo_client.tradingagents
+    # 必须与 get_mongo_db() 及运行时 MONGO_DB 配置保持一致。
+    # 硬编码到 tradingagents 会导致历史数据写入另一个库，缓存读取不到。
+    return db_manager.mongo_client[settings.MONGO_DB]
