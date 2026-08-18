@@ -591,6 +591,42 @@ async def list_positions(current_user: dict = Depends(get_current_user)):
     return ok({"items": enriched})
 
 
+@router.post("/refresh-quotes", response_model=dict)
+async def refresh_position_quotes(current_user: dict = Depends(get_current_user)):
+    """强制刷新当前用户持仓行情，随后由持仓接口返回最新价格。"""
+    db = get_mongo_db()
+    positions = await db["paper_positions"].find(
+        {"user_id": current_user["id"]}, {"_id": 0, "code": 1, "market": 1}
+    ).to_list(None)
+    result: Dict[str, Any] = {
+        "cn": {"requested": False, "success": None},
+        "hk": {"requested": 0, "success": 0},
+        "us": {"requested": 0, "success": 0},
+    }
+
+    if any(position.get("market", "CN") == "CN" for position in positions):
+        from app.services.quotes_ingestion_service import QuotesIngestionService
+
+        result["cn"]["requested"] = True
+        result["cn"].update(await QuotesIngestionService().refresh_now())
+
+    foreign_positions = [p for p in positions if p.get("market") in {"HK", "US"}]
+    if foreign_positions:
+        from app.services.foreign_stock_service import ForeignStockService
+
+        service = ForeignStockService(db=db)
+        for position in foreign_positions:
+            market = position["market"]
+            result[market.lower()]["requested"] += 1
+            try:
+                if await service.get_quote(market, position["code"], force_refresh=True):
+                    result[market.lower()]["success"] += 1
+            except Exception as exc:
+                logger.warning("手动刷新%s行情失败 %s: %s", market, position["code"], exc)
+
+    return ok(result)
+
+
 @router.get("/orders", response_model=dict)
 async def list_orders(limit: int = Query(50, ge=1, le=200), current_user: dict = Depends(get_current_user)):
     db = get_mongo_db()

@@ -57,6 +57,13 @@ export const paperApi = {
   async getPositions() {
     return ApiClient.get<{ items: PaperPositionItem[] }>('/api/paper/positions')
   },
+  async refreshQuotes() {
+    return ApiClient.post<{
+      cn: { requested: boolean; success: boolean | null; error?: string }
+      hk: { requested: number; success: number }
+      us: { requested: number; success: number }
+    }>('/api/paper/refresh-quotes')
+  },
   async getOrders(limit = 50) {
     return ApiClient.get<{ items: PaperOrderItem[] }>(`/api/paper/orders`, { limit })
   },

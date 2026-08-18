@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, time as dtime, timedelta
 from typing import Dict, Optional, Tuple, List
@@ -656,7 +657,11 @@ class QuotesIngestionService:
             source_type, akshare_api = self._get_next_source()
 
             # 尝试获取行情
-            quotes_map, source_name = self._fetch_quotes_from_source(source_type, akshare_api)
+            # 数据源客户端是同步 requests 调用，必须移出事件循环，避免刷新行情时
+            # 阻塞报告、持仓等其他 API 请求。
+            quotes_map, source_name = await asyncio.to_thread(
+                self._fetch_quotes_from_source, source_type, akshare_api
+            )
 
             if not quotes_map:
                 logger.warning(f"⚠️ {source_name or source_type} 未获取到行情数据，跳过本次入库")
@@ -696,3 +701,27 @@ class QuotesIngestionService:
                 records_count=0,
                 error_msg=str(e)
             )
+
+    async def refresh_now(self) -> Dict[str, object]:
+        """强制刷新一次全市场行情，供用户手动刷新持仓时调用。"""
+        candidates = [("tushare", None), ("akshare", "eastmoney"), ("akshare", "sina")]
+        failed_sources: List[str] = []
+
+        for source_type, akshare_api in candidates:
+            quotes_map, source_name = self._fetch_quotes_from_source(source_type, akshare_api)
+            if not quotes_map:
+                failed_sources.append(source_name or source_type)
+                continue
+
+            try:
+                trade_date = DataSourceManager().find_latest_trade_date_with_fallback()
+            except Exception:
+                trade_date = None
+            trade_date = trade_date or datetime.now(self.tz).strftime("%Y%m%d")
+            await self._bulk_upsert(quotes_map, trade_date, source_name)
+            await self._record_sync_status(True, source_name, len(quotes_map))
+            return {"success": True, "source": source_name, "records_count": len(quotes_map), "trade_date": trade_date}
+
+        error = "、".join(failed_sources) or "没有可用行情源"
+        await self._record_sync_status(False, error_msg=f"手动刷新失败: {error}")
+        return {"success": False, "error": error, "records_count": 0}

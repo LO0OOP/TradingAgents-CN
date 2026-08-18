@@ -6,7 +6,7 @@
         <span>模拟交易</span>
       </div>
       <div class="actions">
-        <el-button :icon="Refresh" text size="small" @click="refreshAll">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading.refresh" text size="small" @click="refreshAll(true)">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openOrderDialog">下市场单</el-button>
         <el-button type="danger" plain :icon="Delete" @click="confirmReset">重置账户</el-button>
       </div>
@@ -290,7 +290,7 @@ const account = ref<any | null>(null)
 const positions = ref<any[]>([])
 const orders = ref<any[]>([])
 const selectedPositions = ref<any[]>([])
-const loading = ref({ account: false, positions: false, orders: false })
+const loading = ref({ account: false, positions: false, orders: false, refresh: false })
 
 const orderDialog = ref(false)
 const order = ref({ side: 'buy', code: '', qty: 100 })
@@ -497,7 +497,23 @@ async function confirmReset() {
   }
 }
 
-async function refreshAll() {
+async function refreshAll(forceQuotes = false) {
+  if (forceQuotes) {
+    try {
+      loading.value.refresh = true
+      const quoteResult = await paperApi.refreshQuotes()
+      const cnFailed = quoteResult.data?.cn?.requested && quoteResult.data.cn.success === false
+      if (cnFailed) {
+        ElMessage.warning(`A股行情刷新失败，暂时保留上次行情：${quoteResult.data.cn.error || '数据源不可用'}`)
+      } else {
+        ElMessage.success('行情已刷新')
+      }
+    } catch (e: any) {
+      ElMessage.warning(e?.message || '行情刷新失败，暂时保留上次行情')
+    } finally {
+      loading.value.refresh = false
+    }
+  }
   await Promise.all([fetchAccount(), fetchPositions(), fetchOrders()])
 }
 
