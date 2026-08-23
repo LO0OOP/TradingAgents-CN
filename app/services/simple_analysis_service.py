@@ -922,6 +922,35 @@ class SimpleAnalysisService:
 
                 return
 
+            # Any model call must first refresh a quote from the user's enabled
+            # sources. The latest trading day is valid on market holidays.
+            from app.services.analysis_market_data_guard import (
+                MarketDataFreshnessError,
+                require_current_market_data,
+            )
+            try:
+                await require_current_market_data(stock_code, market_type)
+            except MarketDataFreshnessError as exc:
+                user_friendly_error = (
+                    "❌ 最新行情校验未通过\n\n"
+                    f"{exc}\n\n"
+                    "系统未能确认最新可用行情。为避免使用旧缓存生成错误结论，已终止本次分析。"
+                )
+                logger.error("❌ %s", user_friendly_error)
+                await self.memory_manager.update_task_status(
+                    task_id=task_id,
+                    status=AnalysisStatus.FAILED,
+                    progress=0,
+                    error_message=user_friendly_error,
+                )
+                await self._update_task_status(
+                    task_id,
+                    AnalysisStatus.FAILED,
+                    0,
+                    error_message=user_friendly_error,
+                )
+                return
+
             logger.info(f"✅ 股票代码验证通过: {stock_code} - {validation_result.stock_name}")
             logger.info(f"📊 市场类型: {validation_result.market_type}")
             logger.info(f"📈 历史数据: {'有' if validation_result.has_historical_data else '无'}")

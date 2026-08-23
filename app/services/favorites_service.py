@@ -8,7 +8,7 @@ from bson import ObjectId
 
 from app.core.database import get_mongo_db
 from app.models.user import FavoriteStock
-from app.services.quotes_service import get_quotes_service
+from app.services.market_quote_service import get_market_quote_service
 
 
 class FavoritesService:
@@ -54,8 +54,12 @@ class FavoritesService:
             "volume": None,
         }
 
-    async def get_user_favorites(self, user_id: str) -> List[Dict[str, Any]]:
-        """获取用户自选股列表，并批量拉取实时行情进行富集（兼容字符串ID与ObjectId）。"""
+    async def get_user_favorites(
+        self,
+        user_id: str,
+        include_quotes: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """获取用户自选股列表，可选地使用统一行情接口富集数据。"""
         db = await self._get_db()
 
         favorites: List[Dict[str, Any]] = []
@@ -119,32 +123,28 @@ class FavoritesService:
                     it["board"] = "-"
                     it["exchange"] = "-"
 
-        # 批量获取行情（优先使用入库的 market_quotes，30秒更新）
-        if codes:
+        # All quote reads use the unified service. A-share list views only read
+        # the persisted snapshot; they never trigger a second direct AKShare
+        # request while the user is merely opening the watchlist.
+        if items and include_quotes:
             try:
-                coll = db["market_quotes"]
-                cursor = coll.find({"code": {"$in": codes}}, {"code": 1, "close": 1, "pct_chg": 1, "amount": 1})
-                docs = await cursor.to_list(length=None)
-                quotes_map = {str(d.get("code")).zfill(6): d for d in (docs or [])}
+                quote_service = get_market_quote_service()
+                quote_result = await quote_service.get_quotes(
+                    [
+                        {"code": item.get("stock_code"), "market": item.get("market")}
+                        for item in items
+                    ],
+                    force_refresh=False,
+                )
                 for it in items:
-                    code = it.get("stock_code")
-                    q = quotes_map.get(code)
+                    raw_code = str(it.get("stock_code") or "")
+                    market = quote_service._normalize_market(it.get("market"), raw_code)
+                    code = quote_service._normalize_cn_code(raw_code) if market == "CN" else raw_code
+                    q = quote_result["quotes"].get(f"{market}:{code}")
                     if q:
-                        it["current_price"] = q.get("close")
-                        it["change_percent"] = q.get("pct_chg")
-                # 兜底：对未命中的代码使用在线源补齐（可选）
-                missing = [c for c in codes if c not in quotes_map]
-                if missing:
-                    try:
-                        quotes_online = await get_quotes_service().get_quotes(missing)
-                        for it in items:
-                            code = it.get("stock_code")
-                            if it.get("current_price") is None:
-                                q2 = quotes_online.get(code, {}) if quotes_online else {}
-                                it["current_price"] = q2.get("close")
-                                it["change_percent"] = q2.get("pct_chg")
-                    except Exception:
-                        pass
+                        it["current_price"] = q.get("price")
+                        it["change_percent"] = q.get("change_percent")
+                        it["volume"] = q.get("volume")
             except Exception:
                 # 查询失败时保持占位 None，避免影响基础功能
                 pass

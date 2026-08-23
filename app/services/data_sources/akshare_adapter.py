@@ -3,8 +3,9 @@ AKShare data source adapter
 """
 from typing import Optional, Dict
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 from .base import DataSourceAdapter
 
@@ -316,9 +317,6 @@ class AKShareAdapter(DataSourceAdapter):
 
         except Exception as e:
             logger.error(f"获取AKShare {source} 实时快照失败: {e}")
-            if source == "eastmoney":
-                logger.info("AKShare eastmoney failed; retrying the Sina quote endpoint")
-                return self.get_realtime_quotes(source="sina")
             return None
 
     def get_kline(self, code: str, period: str = "day", limit: int = 120, adj: Optional[str] = None):
@@ -415,6 +413,32 @@ class AKShareAdapter(DataSourceAdapter):
             return None
 
     def find_latest_trade_date(self) -> Optional[str]:
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-        logger.info(f"AKShare: Using yesterday as trade date: {yesterday}")
-        return yesterday
+        """Return the latest completed or active A-share trading day."""
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        reference_date = now.date()
+        if now.time() < dtime(9, 30):
+            reference_date -= timedelta(days=1)
+
+        try:
+            import akshare as ak
+
+            calendar = ak.tool_trade_date_hist_sina()
+            if calendar is not None and not calendar.empty:
+                date_column = next(
+                    (column for column in ("trade_date", "日期", "date") if column in calendar.columns),
+                    calendar.columns[0],
+                )
+                dates = pd.to_datetime(calendar[date_column], errors="coerce").dropna()
+                eligible_dates = dates[dates.dt.date <= reference_date]
+                if not eligible_dates.empty:
+                    trade_date = eligible_dates.max().strftime("%Y%m%d")
+                    logger.info("AKShare: Latest trading date from calendar: %s", trade_date)
+                    return trade_date
+        except Exception as exc:
+            logger.warning("AKShare: Trading calendar lookup failed, using weekday fallback: %s", exc)
+
+        while reference_date.weekday() >= 5:
+            reference_date -= timedelta(days=1)
+        trade_date = reference_date.strftime("%Y%m%d")
+        logger.warning("AKShare: Using weekday fallback as latest trading date: %s", trade_date)
+        return trade_date

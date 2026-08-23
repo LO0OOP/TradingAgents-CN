@@ -585,8 +585,11 @@ class TradingAgentsGraph:
         
         self.toolkit = Toolkit(config=self.config)
 
-        # Initialize memories (如果启用)
-        memory_enabled = self.config.get("memory_enabled", True)
+        # The current Web workflow does not persist or validate reflection data.
+        # Disable memories globally until that feedback loop is implemented.
+        memory_enabled = False
+        self.config["memory_enabled"] = False
+        logger.info("💾 [记忆功能] 已全局关闭，不初始化向量库或调用 embedding")
         if memory_enabled:
             try:
                 # 使用单例ChromaDB管理器，避免并发创建冲突
@@ -1217,6 +1220,10 @@ class TradingAgentsGraph:
 
     def reflect_and_remember(self, returns_losses):
         """Reflect on decisions and update memory based on returns."""
+        if not self.bull_memory:
+            logger.info("💾 [记忆功能] 已关闭，跳过投资复盘写入")
+            return
+
         self.reflector.reflect_bull_researcher(
             self.curr_state, returns_losses, self.bull_memory
         )

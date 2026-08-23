@@ -405,7 +405,7 @@ class ForeignStockService:
                 'low': quote_data.get('low'),
                 'volume': quote_data.get('volume'),
                 'change_percent': quote_data.get('change_percent'),
-                'trade_date': quote_data.get('trade_date'),
+                'trade_date': quote_data.get('trade_date') or quote_data.get('latest_trading_day') or quote_data.get('timestamp'),
                 'currency': quote_data.get('currency', 'USD'),
                 'source': data_source,
                 'updated_at': datetime.now().isoformat()
@@ -875,7 +875,7 @@ class ForeignStockService:
             'volume': data.get('volume'),
             'currency': data.get('currency', 'HKD'),
             'source': source,
-            'trade_date': data.get('timestamp', datetime.now().strftime('%Y-%m-%d')),
+            'trade_date': data.get('trade_date') or data.get('timestamp') or data.get('date'),
             'updated_at': datetime.now().isoformat()
         }
 
@@ -1834,4 +1834,3 @@ class ForeignStockService:
         except Exception as e:
             logger.warning(f"⚠️ AKShare获取港股新闻失败: {e}")
             raise
-

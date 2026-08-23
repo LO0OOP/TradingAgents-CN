@@ -271,12 +271,15 @@ async def lifespan(app: FastAPI):
 
     # 启动期：若需要在休市时补充上一交易日收盘快照
     if settings.QUOTES_BACKFILL_ON_STARTUP:
-        try:
-            qi = QuotesIngestionService()
-            await qi.ensure_indexes()
-            await qi.backfill_last_close_snapshot_if_needed()
-        except Exception as e:
-            logger.warning(f"Startup backfill failed (ignored): {e}")
+        async def run_startup_quote_backfill() -> None:
+            try:
+                qi = QuotesIngestionService()
+                await qi.ensure_indexes()
+                await qi.backfill_last_close_snapshot_if_needed()
+            except Exception as e:
+                logger.warning(f"Startup backfill failed (ignored): {e}")
+
+        asyncio.create_task(run_startup_quote_backfill())
 
     # 启动每日定时任务：可配置
     scheduler: AsyncIOScheduler | None = None

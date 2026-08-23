@@ -204,23 +204,28 @@ async def _get_last_price(code: str, market: str) -> Optional[float]:
     """
     db = get_mongo_db()
 
-    # A股：从数据库获取
-    if market == "CN":
-        # 1. 尝试从 market_quotes 获取
-        q = await db["market_quotes"].find_one(
-            {"$or": [{"code": code}, {"symbol": code}]},
-            {"_id": 0, "close": 1}
-        )
-        if q and q.get("close") is not None:
-            try:
-                price = float(q["close"])
-                if price > 0:
-                    logger.debug(f"✅ 从 market_quotes 获取价格: {code} = {price}")
-                    return price
-            except Exception as e:
-                logger.warning(f"⚠️ market_quotes 价格转换失败 {code}: {e}")
+    # All real-time quote reads go through the shared market quote service.
+    # The service reads a validated A-share snapshot or follows the configured
+    # foreign-market provider order; this path never makes a direct provider call.
+    try:
+        from app.services.market_quote_service import get_market_quote_service
 
-        # 2. 回退到 stock_basic_info 的 current_price
+        normalized_code = _zfill_code(code) if market == "CN" else code
+        quote_result = await get_market_quote_service().get_quotes(
+            [{"code": normalized_code, "market": market}],
+            force_refresh=False,
+        )
+        quote = quote_result["quotes"].get(f"{market}:{normalized_code}")
+        if quote and quote.get("price") is not None:
+            price = float(quote["price"])
+            if price > 0:
+                return price
+    except Exception as exc:
+        logger.warning("统一行情服务未返回 %s %s: %s", market, code, exc)
+
+    # A股：统一行情缓存不可用时，回退到已持久化的日线数据。
+    if market == "CN":
+        # 1. 回退到 stock_basic_info 的 current_price
         basic_info = await db["stock_basic_info"].find_one(
             {"$or": [{"code": code}, {"symbol": code}]},
             {"_id": 0, "current_price": 1, "close": 1, "price": 1, "last_price": 1}
@@ -235,9 +240,8 @@ async def _get_last_price(code: str, market: str) -> Optional[float]:
                 except (KeyError, TypeError, ValueError):
                     continue
 
-        # Real-time providers are unavailable outside trading hours or may be
-        # temporarily blocked. A simulated order can safely use the latest
-        # persisted daily close instead of failing outright.
+        # 2. A simulated order can use the latest persisted daily close when
+        # a verified real-time quote is unavailable.
         code6 = _zfill_code(code)
         full_symbol = f"{code6}.SH" if code6.startswith("6") else f"{code6}.SZ"
         daily_quote = await db["stock_daily_quotes"].find_one(
@@ -267,25 +271,6 @@ async def _get_last_price(code: str, market: str) -> Optional[float]:
 
         logger.error(f"❌ 无法从数据库获取A股价格: {code}")
         return None
-
-    # 港股/美股：使用 ForeignStockService
-    elif market in ['HK', 'US']:
-        try:
-            from app.services.foreign_stock_service import ForeignStockService
-            db = get_mongo_db()
-            service = ForeignStockService(db=db)
-
-            quote = await service.get_quote(market, code, force_refresh=False)
-
-            if quote:
-                # 尝试多个可能的价格字段
-                price = quote.get("price") or quote.get("current_price") or quote.get("close")
-                if price and float(price) > 0:
-                    logger.debug(f"✅ 从 ForeignStockService 获取{market}价格: {code} = {price}")
-                    return float(price)
-        except Exception as e:
-            logger.error(f"❌ 获取{market}股价格失败 {code}: {e}")
-            return None
 
     logger.error(f"❌ 无法获取股票价格: {code} (market={market})")
     return None
@@ -604,25 +589,34 @@ async def refresh_position_quotes(current_user: dict = Depends(get_current_user)
         "us": {"requested": 0, "success": 0},
     }
 
-    if any(position.get("market", "CN") == "CN" for position in positions):
-        from app.services.quotes_ingestion_service import QuotesIngestionService
+    from app.services.market_quote_service import get_market_quote_service
 
-        result["cn"]["requested"] = True
-        result["cn"].update(await QuotesIngestionService().refresh_now())
+    instruments = [
+        {"code": position.get("code"), "market": position.get("market", "CN")}
+        for position in positions
+        if position.get("code")
+    ]
+    quote_result = await get_market_quote_service().get_quotes(
+        instruments,
+        force_refresh=True,
+    )
+    cn_positions = [position for position in positions if position.get("market", "CN") == "CN"]
+    result["cn"]["requested"] = bool(cn_positions)
+    if cn_positions:
+        result["cn"]["success"] = all(
+            f"CN:{str(position.get('code')).zfill(6)}" in quote_result["quotes"]
+            for position in cn_positions
+        )
+        result["cn"].update(quote_result.get("refresh", {}).get("CN", {}))
 
-    foreign_positions = [p for p in positions if p.get("market") in {"HK", "US"}]
-    if foreign_positions:
-        from app.services.foreign_stock_service import ForeignStockService
-
-        service = ForeignStockService(db=db)
-        for position in foreign_positions:
-            market = position["market"]
-            result[market.lower()]["requested"] += 1
-            try:
-                if await service.get_quote(market, position["code"], force_refresh=True):
-                    result[market.lower()]["success"] += 1
-            except Exception as exc:
-                logger.warning("手动刷新%s行情失败 %s: %s", market, position["code"], exc)
+    for market in ("HK", "US"):
+        market_positions = [position for position in positions if position.get("market") == market]
+        result[market.lower()]["requested"] = len(market_positions)
+        result[market.lower()]["success"] = sum(
+            f"{market}:{position.get('code')}" in quote_result["quotes"]
+            for position in market_positions
+        )
+    result["errors"] = quote_result.get("errors", {})
 
     return ok(result)
 

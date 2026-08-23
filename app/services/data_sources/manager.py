@@ -23,10 +23,19 @@ class DataSourceManager:
     """
 
     def __init__(self):
+        # Read enablement before constructing adapters.  Tushare establishes a
+        # provider connection in its constructor, so creating it before this
+        # check still contacted a provider that the user had disabled.
+        self.enabled_adapter_names = self._get_configured_adapter_names()
+        adapter_factories = {
+            "tushare": TushareAdapter,
+            "akshare": AKShareAdapter,
+            "baostock": BaoStockAdapter,
+        }
         self.adapters: List[DataSourceAdapter] = [
-            TushareAdapter(),
-            AKShareAdapter(),
-            BaoStockAdapter(),
+            factory()
+            for name, factory in adapter_factories.items()
+            if self.enabled_adapter_names is None or name in self.enabled_adapter_names
         ]
 
         # 从数据库加载优先级配置
@@ -42,6 +51,50 @@ class DataSourceManager:
             logger.warning("⚠️ 数据一致性检查器不可用")
             self.consistency_checker = None
 
+    @staticmethod
+    def _get_configured_adapter_names() -> Optional[set[str]]:
+        """Return enabled A-share adapter names, or None when unconfigured."""
+        try:
+            from app.core.database import get_mongo_db_sync
+
+            db = get_mongo_db_sync()
+            known_names = {"tushare", "akshare", "baostock"}
+            system_config = db.system_configs.find_one(
+                {"is_active": True}, sort=[("version", -1)]
+            ) or {}
+            configured_enabled: Dict[str, bool] = {}
+            for source_config in system_config.get("data_source_configs", []):
+                source_names = {
+                    str(source_config.get("name") or "").lower(),
+                    str(source_config.get("type") or "").lower(),
+                }
+                for name in known_names & source_names:
+                    configured_enabled[name] = bool(source_config.get("enabled", True))
+
+            groupings = list(db.datasource_groupings.find({
+                "market_category_id": "a_shares",
+            }))
+            if groupings:
+                return {
+                    str(grouping.get("data_source_name") or "").lower()
+                    for grouping in groupings
+                    if (
+                        str(grouping.get("data_source_name") or "").lower() in known_names
+                        and grouping.get("enabled", True)
+                        and configured_enabled.get(
+                            str(grouping.get("data_source_name") or "").lower(), True
+                        )
+                    )
+                }
+
+            if configured_enabled:
+                return {
+                    name for name, is_enabled in configured_enabled.items() if is_enabled
+                }
+        except Exception as exc:
+            logger.warning("⚠️ 读取 A股数据源启用状态失败，使用默认数据源: %s", exc)
+        return None
+
     def _load_priority_from_database(self):
         """从数据库加载数据源优先级配置（从 datasource_groupings 集合读取 A股市场的优先级）"""
         try:
@@ -49,32 +102,36 @@ class DataSourceManager:
             db = get_mongo_db_sync()
             groupings_collection = db.datasource_groupings
 
-            # 查询 A股市场的数据源分组配置
+            # Read both enabled and disabled records.  Looking up only enabled
+            # records made a disabled provider silently fall back to its default
+            # priority, which could re-enable Tushare in a runtime fallback.
             groupings = list(groupings_collection.find({
                 "market_category_id": "a_shares",
-                "enabled": True
             }))
 
             if groupings:
-                # 创建名称到优先级的映射（数据源名称需要转换为小写）
+                # A configured category is authoritative: only providers with
+                # an enabled grouping are eligible for A-share requests.
                 priority_map = {}
+                available_names = {adapter.name for adapter in self.adapters}
                 for grouping in groupings:
                     data_source_name = grouping.get('data_source_name', '').lower()
                     priority = grouping.get('priority')
-                    if data_source_name and priority is not None:
-                        priority_map[data_source_name] = priority
-                        logger.info(f"📊 从数据库读取 {data_source_name} 在 A股市场的优先级: {priority}")
+                    is_enabled = grouping.get('enabled', True)
+                    if data_source_name and is_enabled and priority is not None:
+                        if data_source_name in available_names:
+                            priority_map[data_source_name] = priority
+                            logger.info(f"📊 从数据库读取 {data_source_name} 在 A股市场的优先级: {priority}")
+                self.enabled_adapter_names = set(priority_map)
 
-                # 更新各个 Adapter 的优先级
+                # Update only enabled adapters. Disabled adapters are filtered
+                # in get_available_adapters and cannot appear in any fallback.
                 for adapter in self.adapters:
                     if adapter.name in priority_map:
-                        # 动态设置优先级
                         adapter._priority = priority_map[adapter.name]
                         logger.info(f"✅ 设置 {adapter.name} 优先级: {adapter._priority}")
                     else:
-                        # 使用默认优先级
-                        adapter._priority = adapter._get_default_priority()
-                        logger.info(f"⚠️ 数据库中未找到 {adapter.name} 配置，使用默认优先级: {adapter._priority}")
+                        logger.info(f"⏭️ {adapter.name} 未在 A股数据源配置中启用，跳过")
             else:
                 logger.info("⚠️ 数据库中未找到 A股市场的数据源配置，使用默认优先级")
                 # 使用默认优先级
@@ -91,6 +148,12 @@ class DataSourceManager:
     def get_available_adapters(self) -> List[DataSourceAdapter]:
         available: List[DataSourceAdapter] = []
         for adapter in self.adapters:
+            if (
+                self.enabled_adapter_names is not None
+                and adapter.name not in self.enabled_adapter_names
+            ):
+                logger.info("Data source %s is disabled in A-share configuration", adapter.name)
+                continue
             if adapter.is_available():
                 available.append(adapter)
                 logger.info(
@@ -209,9 +272,15 @@ class DataSourceManager:
         for adapter in available_adapters:
             try:
                 logger.info(f"Trying to fetch realtime quotes from {adapter.name}")
-                data = adapter.get_realtime_quotes()
-                if data:
-                    return data, adapter.name
+                if adapter.name == "akshare":
+                    for endpoint in ("eastmoney", "sina"):
+                        data = adapter.get_realtime_quotes(source=endpoint)
+                        if data:
+                            return data, f"akshare_{endpoint}"
+                else:
+                    data = adapter.get_realtime_quotes()
+                    if data:
+                        return data, adapter.name
             except Exception as e:
                 logger.error(f"Failed to fetch realtime quotes from {adapter.name}: {e}")
                 continue

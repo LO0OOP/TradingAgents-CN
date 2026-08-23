@@ -1168,6 +1168,19 @@ class DataSourceManager:
                 # 调用统一的格式化方法（包含技术指标计算）
                 result = self._format_stock_data_response(df, symbol, stock_name, start_date, end_date)
 
+                # Analysis entry refreshes this quote first; attach it so the
+                # model sees the latest provider snapshot alongside daily bars.
+                quote = adapter.get_market_quotes(symbol)
+                if quote:
+                    result += (
+                        "\n\n## 最新行情快照\n"
+                        f"- 行情日期: {quote.get('trade_date', '未知')}\n"
+                        f"- 最新价: {quote.get('close', '未知')}\n"
+                        f"- 涨跌幅: {quote.get('pct_chg', '未知')}%\n"
+                        f"- 成交额: {quote.get('amount', '未知')}\n"
+                        f"- 行情源: {quote.get('source', '未知')}\n"
+                    )
+
                 logger.info(f"✅ [MongoDB] 已计算技术指标: MA5/10/20/60, MACD, RSI, BOLL")
                 return result, "mongodb"
             else:
