@@ -1446,6 +1446,38 @@ class ConfigService:
                         "details": None
                     }
 
+            elif ds_type == "tencent":
+                # 腾讯财经不需要 API Key，直接测试实时行情接口
+                try:
+                    resp = requests.get(
+                        "https://qt.gtimg.cn/q=sz000001",
+                        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+                        timeout=10,
+                    )
+                    if resp.status_code == 200 and b"v_sz000001" in resp.content:
+                        response_time = time.time() - start_time
+                        return {
+                            "success": True,
+                            "message": "成功连接到腾讯财经数据源",
+                            "response_time": response_time,
+                            "details": {
+                                "type": ds_type,
+                                "test_result": "获取平安银行实时行情成功"
+                            }
+                        }
+                    return {
+                        "success": False,
+                        "message": f"腾讯财经接口返回异常: HTTP {resp.status_code}",
+                        "response_time": time.time() - start_time,
+                        "details": None
+                    }
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "message": f"腾讯财经接口调用失败: {str(e)}",
+                        "response_time": time.time() - start_time,
+                        "details": None
+                    }
             elif ds_type == "yahoo_finance":
                 # Yahoo Finance 测试
                 if not ds_config.endpoint:

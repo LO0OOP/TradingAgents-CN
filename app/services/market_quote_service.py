@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.core.database import get_mongo_db
@@ -97,6 +98,29 @@ class MarketQuoteService:
                     if self._cn_refresh_task is task:
                         self._cn_refresh_task = None
 
+    async def _fetch_cn_quotes_multi(self, codes: List[str]):
+        """按代码列表拉取 A 股单只/多只实时行情，写回缓存，返回 (quotes_map, source)。"""
+        manager = DataSourceManager()
+        quotes_map, source = await asyncio.to_thread(
+            manager.get_realtime_quotes_multi_with_fallback, list(codes)
+        )
+        if not quotes_map:
+            return {}, None
+        try:
+            trade_date = await asyncio.to_thread(
+                manager.find_latest_trade_date_with_fallback
+            ) or datetime.now().strftime("%Y%m%d")
+        except Exception:
+            trade_date = datetime.now().strftime("%Y%m%d")
+        try:
+            await QuotesIngestionService()._bulk_upsert(quotes_map, trade_date, source)
+        except Exception as exc:
+            logger.warning("写回单只行情缓存失败（忽略）: %s", exc)
+        for code in quotes_map:
+            quotes_map[code]["trade_date"] = trade_date
+            quotes_map[code]["source"] = source
+        return quotes_map, source
+
     async def get_quotes(
         self,
         instruments: Iterable[Dict[str, Any]],
@@ -121,10 +145,21 @@ class MarketQuoteService:
         result: Dict[str, Any] = {"quotes": {}, "errors": {}, "refresh": {}}
         cn_codes = sorted({code for market, code in normalized if market == "CN"})
         if cn_codes:
-            if force_refresh:
-                result["refresh"]["CN"] = await self.refresh_cn_market()
-            cn_quotes = await self._get_cached_cn_quotes(cn_codes)
             expected_date = await self.get_latest_cn_trade_date()
+            cn_quotes = await self._get_cached_cn_quotes(cn_codes)
+            need_fetch = list(cn_codes) if force_refresh else [
+                code for code in cn_codes
+                if not cn_quotes.get(code)
+                or cn_quotes.get(code).get("close") is None
+                or (expected_date and self._normalize_trade_date(cn_quotes.get(code).get("trade_date")) != expected_date)
+            ]
+            if need_fetch:
+                fetched, source = await self._fetch_cn_quotes_multi(need_fetch)
+                if fetched:
+                    result["refresh"]["CN"] = {"source": source, "records_count": len(fetched)}
+                    for code in need_fetch:
+                        if code in fetched:
+                            cn_quotes[code] = {**fetched[code], "source": source}
             for code in cn_codes:
                 quote = cn_quotes.get(code)
                 key = f"CN:{code}"

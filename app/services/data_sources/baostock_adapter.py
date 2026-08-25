@@ -236,6 +236,62 @@ class BaoStockAdapter(DataSourceAdapter):
             return None
         return None
 
+    def get_realtime_quotes_multi(self, codes):
+        """BaoStock 单只/多只当日近实时快照（当日日K，收盘后数据完整）。"""
+        if not self.is_available():
+            return None
+        try:
+            import baostock as bs
+
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
+            result = {}
+            for code in codes:
+                code6 = str(code).zfill(6)
+                bs_code = ("sh." if code6.startswith(("6", "9")) else "sz.") + code6
+                rows = []
+                try:
+                    lg = bs.login()
+                    if lg.error_code != "0":
+                        continue
+                    rs = bs.query_history_k_data_plus(
+                        bs_code,
+                        "date,code,open,high,low,close,preclose,volume,amount,pctChg",
+                        start_date=start_date,
+                        end_date=end_date,
+                        frequency="d",
+                        adjustflag="3",
+                    )
+                    while (rs.error_code == "0") and rs.next():
+                        rows.append(rs.get_row_data())
+                    fields = rs.fields
+                    bs.logout()
+                except Exception:
+                    try:
+                        bs.logout()
+                    except Exception:
+                        pass
+                    continue
+                if not rows:
+                    continue
+                last = dict(zip(fields, rows[-1]))
+                close = self._safe_float(last.get("close"))
+                if close is None:
+                    continue
+                result[code6] = {
+                    "close": close,
+                    "pct_chg": self._safe_float(last.get("pctChg")),
+                    "amount": self._safe_float(last.get("amount")),
+                    "volume": self._safe_float(last.get("volume")),
+                    "open": self._safe_float(last.get("open")),
+                    "high": self._safe_float(last.get("high")),
+                    "low": self._safe_float(last.get("low")),
+                    "pre_close": self._safe_float(last.get("preclose")),
+                }
+            return result or None
+        except Exception as e:
+            logger.error(f"BaoStock单只行情失败: {e}")
+            return None
     def get_kline(self, code: str, period: str = "day", limit: int = 120, adj: Optional[str] = None):
         """BaoStock not used for K-line here; return None to allow fallback"""
         if not self.is_available():

@@ -319,6 +319,50 @@ class AKShareAdapter(DataSourceAdapter):
             logger.error(f"获取AKShare {source} 实时快照失败: {e}")
             return None
 
+    def get_realtime_quotes_multi(self, codes):
+        """AKShare 单只/多只实时行情：按代码列表循环调用东财单只接口（push2.eastmoney.com）。"""
+        if not self.is_available():
+            return None
+        try:
+            import requests
+
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://quote.eastmoney.com/",
+            })
+            result = {}
+            for code in codes:
+                code6 = str(code).zfill(6)
+                secid = ("1." if code6.startswith(("6", "9")) else "0.") + code6
+                url = (
+                    "https://push2.eastmoney.com/api/qt/stock/get"
+                    f"?secid={secid}&fltt=2&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170"
+                )
+                try:
+                    r = session.get(url, timeout=8)
+                    r.raise_for_status()
+                    d = (r.json() or {}).get("data") or {}
+                    close = self._safe_float(d.get("f43"))
+                    if close is None:
+                        continue
+                    result[code6] = {
+                        "close": close,
+                        "pct_chg": self._safe_float(d.get("f170")),
+                        "amount": self._safe_float(d.get("f48")),
+                        "volume": self._safe_float(d.get("f47")),
+                        "open": self._safe_float(d.get("f46")),
+                        "high": self._safe_float(d.get("f44")),
+                        "low": self._safe_float(d.get("f45")),
+                        "pre_close": self._safe_float(d.get("f60")),
+                        "name": d.get("f58"),
+                    }
+                except Exception:
+                    continue
+            return result or None
+        except Exception as e:
+            logger.error(f"获取AKShare单只行情失败: {e}")
+            return None
     def get_kline(self, code: str, period: str = "day", limit: int = 120, adj: Optional[str] = None):
         """AKShare K-line as fallback. Try daily/week/month via stock_zh_a_hist; minutes via stock_zh_a_minute."""
         if not self.is_available():

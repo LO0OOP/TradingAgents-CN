@@ -57,6 +57,12 @@ class DataSourceAdapter(ABC):
         """返回 { '000001': {'close': 10.0, 'pct_chg': 1.2, 'amount': 1.2e8}, ... }"""
         raise NotImplementedError
 
+    # 新增：按代码列表获取实时行情（单只/多只），键为6位代码
+    @abstractmethod
+    def get_realtime_quotes_multi(self, codes) -> Optional[Dict[str, Dict[str, Optional[float]]]]:
+        """返回 { '000001': {'close': 10.0, 'pct_chg': 1.2, 'amount': 1.2e8}, ... }"""
+        raise NotImplementedError
+
     # 新增：K线与新闻抽象接口
     @abstractmethod
     def get_kline(self, code: str, period: str = "day", limit: int = 120, adj: Optional[str] = None):

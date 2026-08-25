@@ -377,6 +377,12 @@ const dataSourceTypes = [
     register_url: 'http://baostock.com/',
     register_guide: 'BaoStock 是开源免费的证券数据平台，无需注册即可使用。访问官网了解更多：'
   },
+  {
+    label: '腾讯财经',
+    value: 'tencent',
+    register_url: 'https://gu.qq.com/',
+    register_guide: '腾讯财经提供免费的 A 股实时行情，无需注册即可使用。访问官网了解更多：'
+  },
 
   // 美股数据源
   {

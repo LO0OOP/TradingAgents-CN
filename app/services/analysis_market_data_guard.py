@@ -126,27 +126,23 @@ async def _ensure_cn_quote(stock_code: str) -> Dict[str, Any]:
         code,
         "缺失" if not quote else f"日期 {quote_date or '未知'} 落后于 {expected_date}",
     )
-    refresh_result = await _refresh_cn_quotes()
-    quote = await db["market_quotes"].find_one(
-        {"$or": [{"code": code}, {"symbol": code}]},
-        {"_id": 0},
+    quote_result = await get_market_quote_service().get_quotes(
+        [{"code": code, "market": "CN"}],
+        force_refresh=True,
     )
-    if not quote:
-        raise MarketDataFreshnessError(f"A股 {code} 未获得最新行情快照")
-
-    quote_date = _normalize_trade_date(quote.get("trade_date"))
-    if not quote_date:
+    key = f"CN:{code}"
+    refreshed = quote_result["quotes"].get(key)
+    if not refreshed:
         raise MarketDataFreshnessError(
-            f"A股 {code} 最新行情缺少交易日期，无法确认数据是否为最新"
+            f"A股 {code} 实时行情刷新失败: {quote_result['errors'].get(key, '没有可用行情源')}"
         )
-    if quote_date != expected_date:
-        raise MarketDataFreshnessError(
-            f"A股 {code} 行情日期为 {quote_date}，落后于最新交易日 {expected_date}"
-        )
-    if quote.get("close") is None:
-        raise MarketDataFreshnessError(f"A股 {code} 最新行情缺少有效价格")
-
-    return _build_cn_quote_result(code, quote, refresh_result.get("source"))
+    quote = {
+        "close": refreshed.get("price"),
+        "trade_date": refreshed.get("trade_date"),
+        "pct_chg": refreshed.get("change_percent"),
+        "source": refreshed.get("source"),
+    }
+    return _build_cn_quote_result(code, quote, refreshed.get("source"))
 
 
 async def _ensure_foreign_quote(market_type: str, stock_code: str) -> Dict[str, Any]:

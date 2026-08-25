@@ -166,6 +166,13 @@ class TushareAdapter(DataSourceAdapter):
             logger.error(f'Failed to fetch realtime quotes from Tushare rt_k: {e}')
             return None
 
+    def get_realtime_quotes_multi(self, codes):
+        """Tushare 单只/多只：复用 rt_k 全市场快照后按代码过滤。"""
+        full = self.get_realtime_quotes()
+        if not full:
+            return None
+        wanted = {str(c or '') .zfill(6) for c in codes}
+        return {k: v for k, v in full.items() if k in wanted} or None
     def get_kline(self, code: str, period: str = "day", limit: int = 120, adj: Optional[str] = None):
         """Get K-line bars using tushare pro_bar
         period: day/week/month/5m/15m/30m/60m

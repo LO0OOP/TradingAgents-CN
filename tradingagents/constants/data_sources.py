@@ -31,6 +31,7 @@ class DataSourceCode(str, Enum):
     TUSHARE = "tushare"      # Tushare - 专业A股数据
     AKSHARE = "akshare"      # AKShare - 开源金融数据（A股+港股）
     BAOSTOCK = "baostock"    # BaoStock - 免费A股数据
+    TENCENT = "tencent"    # Tencent - 腾讯财经A股实时行情
     
     # ==================== 美股数据源 ====================
     YFINANCE = "yfinance"         # yfinance - Yahoo Finance Python库
@@ -133,6 +134,19 @@ DATA_SOURCE_REGISTRY: Dict[str, DataSourceInfo] = {
     ),
     
     # yfinance
+    # Tencent
+    DataSourceCode.TENCENT: DataSourceInfo(
+        code=DataSourceCode.TENCENT,
+        name="Tencent",
+        display_name="腾讯财经",
+        provider="腾讯",
+        description="腾讯财经实时行情接口，提供 A 股单只/多只实时行情（免费、无需 API 密钥）",
+        supported_markets=["a_shares"],
+        requires_api_key=False,
+        is_free=True,
+        features=["实时行情", "单只/多只行情", "免费", "无需API密钥"],
+    ),
+
     DataSourceCode.YFINANCE: DataSourceInfo(
         code=DataSourceCode.YFINANCE,
         name="yfinance",

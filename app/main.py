@@ -37,6 +37,7 @@ from app.routers import multi_market_stocks as multi_market_stocks_router
 from app.routers import notifications as notifications_router
 from app.routers import websocket_notifications as websocket_notifications_router
 from app.routers import scheduler as scheduler_router
+from app.routers import quotes as quotes_router
 from app.services.basics_sync_service import get_basics_sync_service
 from app.services.multi_source_basics_sync_service import MultiSourceBasicsSyncService
 from app.services.scheduler_service import set_scheduler_instance
@@ -344,6 +345,14 @@ async def lifespan(app: FastAPI):
                 name="实时行情入库服务"
             )
             logger.info(f"⏱ 实时行情入库任务已启动: 每 {settings.QUOTES_INGEST_INTERVAL_SECONDS}s")
+        # 收盘后全市场行情入库（每天 17:00 全量一次）
+        scheduler.add_job(
+            quotes_ingestion.refresh_now,
+            CronTrigger(hour=17, minute=0, timezone=settings.TIMEZONE),
+            id="quotes_after_close",
+            name="收盘后全市场行情入库"
+        )
+        logger.info("📅 收盘后全市场行情入库任务已配置: 每天 17:00")
 
         # Tushare统一数据同步任务配置
         logger.info("🔄 配置Tushare统一数据同步任务...")
@@ -728,6 +737,7 @@ app.include_router(websocket_notifications_router.router, prefix="/api", tags=["
 
 # 定时任务管理
 app.include_router(scheduler_router.router, tags=["scheduler"])
+app.include_router(quotes_router.router, prefix="/api", tags=["quotes"])
 
 app.include_router(sse.router, prefix="/api/stream", tags=["streaming"])
 app.include_router(sync_router.router)

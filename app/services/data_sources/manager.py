@@ -10,6 +10,7 @@ from .base import DataSourceAdapter
 from .tushare_adapter import TushareAdapter
 from .akshare_adapter import AKShareAdapter
 from .baostock_adapter import BaoStockAdapter
+from .tencent_adapter import TencentAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class DataSourceManager:
             "tushare": TushareAdapter,
             "akshare": AKShareAdapter,
             "baostock": BaoStockAdapter,
+    "tencent": TencentAdapter,
         }
         self.adapters: List[DataSourceAdapter] = [
             factory()
@@ -58,7 +60,7 @@ class DataSourceManager:
             from app.core.database import get_mongo_db_sync
 
             db = get_mongo_db_sync()
-            known_names = {"tushare", "akshare", "baostock"}
+            known_names = {"tushare", "akshare", "baostock", "tencent"}
             system_config = db.system_configs.find_one(
                 {"is_active": True}, sort=[("version", -1)]
             ) or {}
@@ -286,6 +288,37 @@ class DataSourceManager:
                 continue
         return None, None
 
+
+    def get_realtime_quotes_multi_with_fallback(self, codes: List[str], preferred_sources: Optional[List[str]] = None) -> Tuple[Optional[Dict], Optional[str]]:
+        """
+        按代码列表获取单只/多只实时行情，按适配器优先级依次尝试，返回首个成功结果。
+
+        Returns: (quotes_dict, source_name)
+        quotes_dict 形如 { '000001': {'close': 10.0, 'pct_chg': 1.2, 'amount': 1.2e8}, ... }
+        """
+        available_adapters = self.get_available_adapters()
+
+        if preferred_sources:
+            priority_map = {name: idx for idx, name in enumerate(preferred_sources)}
+            preferred = [a for a in available_adapters if a.name in priority_map]
+            others = [a for a in available_adapters if a.name not in priority_map]
+            preferred.sort(key=lambda a: priority_map.get(a.name, 999))
+            available_adapters = preferred + others
+
+        normalized_codes = [str(c or '').zfill(6) for c in codes if str(c or '').strip()]
+        if not normalized_codes:
+            return None, None
+
+        for adapter in available_adapters:
+            try:
+                logger.info(f"Trying to fetch multi realtime quotes from {adapter.name}")
+                data = adapter.get_realtime_quotes_multi(normalized_codes)
+                if data:
+                    return data, adapter.name
+            except Exception as e:
+                logger.error(f"Failed to fetch multi realtime quotes from {adapter.name}: {e}")
+                continue
+        return None, None
 
     def get_daily_basic_with_consistency_check(
         self, trade_date: str
