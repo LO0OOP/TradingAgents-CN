@@ -2,9 +2,19 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/Version-v1.1.0-green.svg)](./VERSION)
+[![Version](https://img.shields.io/badge/Version-v1.0.1-green.svg)](./VERSION)
 [![Documentation](https://img.shields.io/badge/docs-中文文档-green.svg)](./docs/)
 [![Original](https://img.shields.io/badge/基于-TauricResearch/TradingAgents-orange.svg)](https://github.com/TauricResearch/TradingAgents)
+
+---
+
+## 📖 项目简介
+
+**TradingAgents-CN** 是基于 [TradingAgents](https://github.com/TauricResearch/TradingAgents)（Tauric Research 团队开源的多智能体交易分析框架）的中文增强分支，上游为 [hsliuping/TradingAgents-CN](https://github.com/hsliuping/TradingAgents-CN)。本仓库在中文版基础上持续维护增强，提供 A股 / 港股 / 美股 的多智能体投资分析与教学平台。
+
+**核心功能**：多智能体股票分析（市场/基本面/新闻/社媒分析师 → 多空研究辩论 → 交易决策 → 风险管理）、自选股管理、智能股票筛选、模拟交易、批量分析、多 LLM 提供商、多数据源（Tushare / AKShare / BaoStock / 腾讯）、报告导出（Markdown / Word / PDF）、用户权限与配置管理。
+
+**技术栈**：FastAPI + Vue 3 + Element Plus + MongoDB + Redis + Docker（amd64 / arm64 多架构）。
 
 ---
 
@@ -99,9 +109,49 @@
 
 **🎯 我们的定位与使命**: 专注学习与研究，提供中文化学习中心与工具，合规友好，支持 A股/港股/美股 的分析与教学，推动 AI 金融技术在中文社区的普及与正确使用。
 
+## 🏗️ 系统架构
+
+### 🤖 多智能体分析流程（源自 TradingAgents）
+
+```
+市场分析师 ┐
+基本面分析师 ├─► 研究团队（多头 vs 空头辩论）──► 交易员决策 ──► 风险管理 ──► 组合管理
+新闻分析师 │
+社媒分析师 ┘
+```
+
+### 🧩 技术分层
+
+```
+┌─────────────────────┐
+│  Vue 3 + Element Plus │  前端 SPA（端口 3000）
+└───────────┬─────────┘
+            │ REST API / WebSocket / SSE
+┌───────────▼─────────┐
+│    FastAPI 后端      │  多智能体编排、路由、服务、数据源适配（端口 8000）
+└───────────┬─────────┘
+            │
+      ┌─────┴─────┐
+      ▼           ▼
+┌──────────┐  ┌──────────┐
+│ MongoDB  │  │  Redis   │  数据持久化 + 缓存
+└──────────┘  └──────────┘
+```
+
+### 📦 核心目录
+
+| 目录 | 说明 |
+|------|------|
+| `app/` | FastAPI 后端：路由、服务、数据源适配层 |
+| `frontend/` | Vue 3 前端单页应用 |
+| `tradingagents/` | 核心多智能体库、数据流、LLM 适配 |
+| `cli/` `scripts/` `docs/` `examples/` `tests/` | 命令行、运维脚本、文档、示例、测试 |
+
+---
+
 ## 🎉 v1.1.0 版本说明 - 火山方舟集成与开发体验增强
 
-> 🚀 **当前推荐版本**: `v1.1.0` 已正式可用，在 v1.0.1 基础上，重点集成火山方舟模型服务、增强推理模型支持、统一开发启动脚本，并完善项目文档体系。
+> 🚀 **当前版本**: `v1.0.1` —— 第一个稳定版。基于上游 TradingAgents-CN 的中文增强分支，提供 A股/港股/美股多智能体分析平台。
 
 ### ✨ 核心特性
 
@@ -167,6 +217,20 @@
 |---------|---------|------|---------|
 | 🐳 **Docker版** | 生产环境、跨平台 | ⭐⭐ 中等 | [Docker 部署指南](https://mp.weixin.qq.com/s/JkA0cOu8xJnoY_3LC5oXNw) |
 | 💻 **本地代码版** | 开发者、定制需求 | ⭐⭐⭐ 较难 | [本地安装指南](https://mp.weixin.qq.com/s/cqUGf-sAzcBV19gdI4sYfA) |
+
+#### 🚀 快速开始（Docker Compose）
+
+```bash
+# 1. 配置环境变量
+cp .env.example .env    # 编辑 .env 填入 LLM API Key、数据源 Token 等
+
+# 2. 构建并启动（后端 + 前端 + MongoDB + Redis）
+docker compose up -d --build
+
+# 3. 访问
+# 前端页面       http://localhost:3000
+# 后端 API 文档   http://localhost:8000/docs
+```
 
 ⚠️ **重要提醒**：在分析股票之前，请按相关文档要求，将股票数据同步完成，否则分析结果将会出现数据错误。
 
