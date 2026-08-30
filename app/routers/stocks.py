@@ -319,6 +319,35 @@ async def get_fundamentals(
 
         if not financial_data:
             logger.warning(f"⚠️ 未找到 {code6} 的财务数据")
+            # 🔥 按需拉取：无缓存时用免费 AKShare 财务接口即时抓取（不依赖 Tushare）
+            try:
+                import asyncio
+                from datetime import datetime as _dt
+                from tradingagents.dataflows.providers.china.fundamentals_snapshot import get_cn_fund_snapshot
+                snap = await asyncio.to_thread(get_cn_fund_snapshot, code6)
+                if snap and any(v is not None for v in snap.values()):
+                    financial_data = {
+                        "roe": snap.get("roe"),
+                        "debt_to_assets": snap.get("debt_to_assets"),
+                        "revenue": snap.get("revenue"),
+                        "revenue_ttm": snap.get("revenue_ttm"),
+                        "bps": snap.get("bps"),
+                        "eps": snap.get("eps"),
+                    }
+                    logger.info(
+                        "✅ 按需拉取财务快照(akshare): roe=%s 负债率=%s 营收=%s",
+                        snap.get("roe"), snap.get("debt_to_assets"), snap.get("revenue"),
+                    )
+                    try:
+                        await db["stock_financial_data"].update_one(
+                            {"code": code6},
+                            {"$set": {**financial_data, "code": code6, "data_source": "akshare", "report_period": "latest", "updated_at": _dt.utcnow()}},
+                            upsert=True,
+                        )
+                    except Exception as _e:
+                        logger.debug(f"写入财务缓存失败: {_e}")
+            except Exception as e:
+                logger.warning(f"按需拉取财务快照失败: {e}")
     except Exception as e:
         logger.error(f"获取财务数据失败: {e}")
 

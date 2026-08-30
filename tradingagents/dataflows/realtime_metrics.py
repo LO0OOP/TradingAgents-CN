@@ -322,6 +322,84 @@ def validate_pe_pb(pe: Optional[float], pb: Optional[float]) -> bool:
     return True
 
 
+def _calc_free_realtime_valuation(symbol: str) -> Dict[str, Any]:
+    """免费实时估值：腾讯快照 → BaoStock 兜底，完全不依赖 Tushare。"""
+    code6 = str(symbol).zfill(6)
+
+    # 方案 A：腾讯实时快照（pe_ttm / pb / total_mv / circ_mv / 换手率，实时）
+    try:
+        from app.services.data_sources.tencent_adapter import TencentAdapter
+        quotes = TencentAdapter().get_realtime_quotes_multi([code6])
+        q = (quotes or {}).get(code6)
+        if q and q.get("close") is not None:
+            result = {
+                "pe": q.get("pe_ttm"),
+                "pb": q.get("pb"),
+                "pe_ttm": q.get("pe_ttm"),
+                "pb_mrq": q.get("pb"),
+                "price": q.get("close"),
+                "market_cap": q.get("total_mv"),
+                "circ_mv": q.get("circ_mv"),
+                "turnover_rate": q.get("turnover_rate"),
+                "source": "tencent_realtime",
+                "is_realtime": True,
+                "updated_at": datetime.now().isoformat(),
+            }
+            logger.info(
+                "✅ [免费实时估值] %s 使用腾讯快照: PE_TTM=%s PB=%s 市值=%s亿",
+                code6, q.get("pe_ttm"), q.get("pb"), q.get("total_mv"),
+            )
+            return result
+    except Exception as exc:
+        logger.warning("腾讯快照估值失败，回退 BaoStock: %s", exc)
+
+    # 方案 B：BaoStock 兜底（peTTM / pbMRQ / psTTM，盘后最新）
+    try:
+        import baostock as bs
+        from datetime import date as _date, timedelta as _td
+        bs_code = ("sh." if code6.startswith(("6", "9")) else "sz.") + code6
+        lg = bs.login()
+        if lg.error_code == "0":
+            end = _date.today().strftime("%Y-%m-%d")
+            start = (_date.today() - _td(days=45)).strftime("%Y-%m-%d")
+            rs = bs.query_history_k_data_plus(
+                bs_code, "date,code,close,peTTM,pbMRQ,psTTM,turn",
+                start_date=start, end_date=end, frequency="d", adjustflag="3",
+            )
+            rows = []
+            while (rs.error_code == "0") and rs.next():
+                rows.append(rs.get_row_data())
+            bs.logout()
+            if rows:
+                last = dict(zip(rs.fields, rows[-1]))
+
+                def _f(v):
+                    try:
+                        return float(v) if v not in ("", None) else None
+                    except (TypeError, ValueError):
+                        return None
+
+                result = {
+                    "pe": _f(last.get("peTTM")),
+                    "pb": _f(last.get("pbMRQ")),
+                    "pe_ttm": _f(last.get("peTTM")),
+                    "pb_mrq": _f(last.get("pbMRQ")),
+                    "ps_ttm": _f(last.get("psTTM")),
+                    "price": _f(last.get("close")),
+                    "turnover_rate": _f(last.get("turn")),
+                    "market_cap": None,
+                    "source": "baostock_valuation",
+                    "is_realtime": False,
+                    "updated_at": last.get("date"),
+                }
+                logger.info("✅ [免费实时估值] %s 使用 BaoStock 兜底: PE_TTM=%s PB=%s", code6, result["pe_ttm"], result["pb"])
+                return result
+    except Exception as exc:
+        logger.warning("BaoStock 估值失败: %s", exc)
+
+    logger.warning("⚠️ [免费实时估值] %s 无可用免费估值源（腾讯/BaoStock）", code6)
+    return {}
+
 def get_pe_pb_with_fallback(
     symbol: str,
     db_client=None
@@ -378,6 +456,14 @@ def get_pe_pb_with_fallback(
         logger.error(f"❌ [PE智能策略-失败] 数据库连接失败: {e}")
         return {}
 
+    # 0. 免费实时估值（腾讯快照 → BaoStock 兜底），完全不依赖 Tushare
+    logger.info("   → 尝试方案0: 免费实时估值 (腾讯快照 / BaoStock)")
+    free_metrics = _calc_free_realtime_valuation(symbol)
+    if free_metrics:
+        if validate_pe_pb(free_metrics.get("pe"), free_metrics.get("pb")):
+            logger.info("✅ [PE智能策略-成功] 使用免费实时估值: source=%s", free_metrics.get("source"))
+            return free_metrics
+        logger.warning("⚠️ [PE智能策略-方案0异常] 免费估值超出合理范围")
     # 1. 优先使用动态 PE 计算（基于实时股价 + Tushare TTM）
     logger.info("   → 尝试方案1: 动态PE计算 (实时股价 + Tushare TTM净利润)")
     logger.info("   💡 说明: 使用实时股价和Tushare官方TTM净利润，准确反映当前估值")
