@@ -875,7 +875,7 @@ class ForeignStockService:
             'volume': data.get('volume'),
             'currency': data.get('currency', 'HKD'),
             'source': source,
-            'trade_date': data.get('trade_date') or data.get('timestamp') or data.get('date'),
+            'trade_date': data.get('trade_date') or data.get('timestamp') or data.get('date') or datetime.now().strftime('%Y-%m-%d'),
             'updated_at': datetime.now().isoformat()
         }
 
