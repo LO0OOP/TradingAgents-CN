@@ -412,6 +412,26 @@ class MemoryStateManager:
                 logger.warning(f"⚠️ 任务不存在于内存中: {task_id}")
                 return False
 
+    async def reset_task(self, task_id: str) -> bool:
+        """重置任务状态（用于手动重试）"""
+        with self._lock:
+            if task_id not in self._tasks:
+                logger.warning(f"⚠️ 任务不存在于内存中: {task_id}")
+                return False
+            task = self._tasks[task_id]
+            task.status = TaskStatus.PENDING
+            task.progress = 0
+            task.message = "任务已重新提交，等待执行..."
+            task.current_step = "pending"
+            task.start_time = datetime.now()
+            task.end_time = None
+            task.result_data = None
+            task.error_message = None
+            task.execution_time = None
+            logger.info(f"🔄 重置任务状态: {task_id}")
+            return True
+
+
 # 全局实例
 _memory_state_manager = None
 

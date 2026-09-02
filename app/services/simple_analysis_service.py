@@ -1119,6 +1119,108 @@ class SimpleAnalysisService:
             # 从日志监控中注销
             unregister_analysis_tracker(task_id)
 
+    async def retry_task(
+        self,
+        task_id: str,
+        operator_user_id: str
+    ) -> Dict[str, Any]:
+        """手动重试失败/已取消的任务
+
+        从内存或 MongoDB 中读取原任务参数，重置状态后在后台重新执行同一 task_id。
+        """
+        db = get_mongo_db()
+
+        # 1) 读取任务信息（内存优先，MongoDB 兜底）
+        task_dict = await self.memory_manager.get_task_dict(task_id)
+
+        stock_code = None
+        parameters: Dict[str, Any] = {}
+        owner_user_id = None
+        current_status = None
+
+        if task_dict:
+            stock_code = (
+                task_dict.get("symbol")
+                or task_dict.get("stock_code")
+                or task_dict.get("stock_symbol")
+            )
+            parameters = task_dict.get("parameters") or {}
+            owner_user_id = task_dict.get("user_id")
+            current_status = task_dict.get("status")
+        else:
+            mongo_doc = await db.analysis_tasks.find_one({"task_id": task_id})
+            if not mongo_doc:
+                raise ValueError("任务不存在")
+            stock_code = (
+                mongo_doc.get("symbol")
+                or mongo_doc.get("stock_code")
+                or mongo_doc.get("stock_symbol")
+            )
+            parameters = mongo_doc.get("parameters") or {}
+            owner_user_id = mongo_doc.get("user_id") or mongo_doc.get("user")
+            current_status = str(mongo_doc.get("status", "failed"))
+
+        if not stock_code:
+            raise ValueError("任务缺少股票代码，无法重试")
+
+        if current_status not in (None, "failed", "cancelled", "completed", "pending"):
+            raise ValueError(f"当前状态({current_status})不可重试")
+
+        # 2) 权限校验：仅允许 admin 或任务所有者重试
+        owner_str = str(owner_user_id) if owner_user_id is not None else ""
+        if str(operator_user_id) != "admin" and owner_str and owner_str != str(operator_user_id):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="无权重试该任务")
+
+        # 3) 构造请求（复用原始参数）
+        try:
+            params_obj = AnalysisParameters(**parameters) if parameters else AnalysisParameters()
+        except Exception:
+            logger.warning(f"⚠️ 原任务参数解析失败，使用默认参数: {task_id}")
+            params_obj = AnalysisParameters()
+
+        request = SingleAnalysisRequest(
+            symbol=stock_code,
+            stock_code=stock_code,
+            parameters=params_obj
+        )
+
+        # 4) 重置内存与 MongoDB 状态
+        await self.memory_manager.reset_task(task_id)
+
+        now = datetime.utcnow()
+        await db.analysis_tasks.update_one(
+            {"task_id": task_id},
+            {
+                "$set": {
+                    "status": "pending",
+                    "progress": 0,
+                    "last_error": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "message": "任务已重新提交，等待执行...",
+                    "updated_at": now,
+                },
+                "$unset": {"result": ""},
+            }
+        )
+
+        # 5) 后台重新执行（不等待完成）
+        async def _run():
+            try:
+                await self.execute_analysis_background(task_id, str(operator_user_id), request)
+            except Exception as e:
+                logger.error(f"❌ 重试执行失败: {task_id} - {e}", exc_info=True)
+
+        asyncio.create_task(_run())
+
+        logger.info(f"🔄 任务已提交重试: {task_id} - {stock_code}")
+        return {
+            "task_id": task_id,
+            "status": "pending",
+            "message": "任务已重新提交，正在后台执行"
+        }
+
     async def _execute_analysis_sync(
         self,
         task_id: str,

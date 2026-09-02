@@ -1242,6 +1242,29 @@ async def mark_task_as_failed(
         raise HTTPException(status_code=500, detail=f"标记任务失败: {str(e)}")
 
 
+@router.post("/tasks/{task_id}/retry")
+async def retry_task(
+    task_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """手动重试失败/已取消的分析任务"""
+    try:
+        svc = get_simple_analysis_service()
+        result = await svc.retry_task(task_id, user.get("id", "admin"))
+        return {
+            "success": True,
+            "data": result,
+            "message": "任务已重新提交"
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ 重试任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"重试任务失败: {str(e)}")
+
+
 @router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: str,

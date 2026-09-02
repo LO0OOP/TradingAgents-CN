@@ -84,7 +84,7 @@ const handle401Error = (authStore: any, message: string = '登录已过期，请
 const createAxiosInstance = (): AxiosInstance => {
   const instance = axios.create({
     baseURL: import.meta.env.VITE_API_BASE_URL || '',
-    timeout: 60000, // 增加超时时间到60秒（数据同步等长时间操作）
+    timeout: 120000, // 增加超时时间到2分钟（数据同步/批量分析等长时间操作）
     headers: {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-cache',  // 禁用客户端缓存
@@ -408,30 +408,10 @@ const generateRequestId = (): string => {
 }
 
 // 判断是否应该重试
-const shouldRetry = async (config: RequestConfig | undefined, error: any): Promise<boolean> => {
-  if (!config) return false
-
-  // 获取重试配置（默认重试 2 次）
-  let retryCount = 2
-  if (config.retryCount !== undefined) {
-    retryCount = config.retryCount
-  }
-  const currentRetry = (config as any).__retryCount || 0
-
-  // 如果已经重试过指定次数，不再重试
-  if (currentRetry >= retryCount) {
-    console.log(`🔄 已达到最大重试次数 (${retryCount})，停止重试`)
-    return false
-  }
-
-  // 只对网络错误和超时错误重试
-  const shouldRetryError =
-    error.code === 'ECONNABORTED' ||
-    error.message === 'Network Error' ||
-    error.message.includes('Failed to fetch') ||
-    (error.response && [502, 503, 504].includes(error.response.status))
-
-  return shouldRetryError
+const shouldRetry = async (_config: RequestConfig | undefined, _error: any): Promise<boolean> => {
+  // 🔧 已禁用自动重试：网络/超时错误不再自动重发请求
+  // （批量分析等 POST 请求自动重发会造成任务重复执行）
+  return false
 }
 
 // 重试请求

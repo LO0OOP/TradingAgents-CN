@@ -364,7 +364,41 @@ const openReport = (row:any): void => {
   void router.push({ name: 'ReportDetail', params: { id } })
 }
 
-const retryTask = (_row:any) => { ElMessage.info('重试功能待实现') }
+const retryTask = async (row: any) => {
+  const taskId = row.task_id || row.analysis_id || row.id
+  if (!taskId) {
+    ElMessage.error('任务ID不存在')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要重新执行任务 "${row.stock_name || row.stock_code}" 吗？`,
+      '确认重试',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    loading.value = true
+    await analysisApi.retryTask(taskId)
+    ElMessage.success('任务已重新提交，正在后台执行')
+
+    // 切到“进行中”标签并刷新列表
+    activeTab.value = 'running'
+    currentPage.value = 1
+    await loadList()
+    setupPolling()
+  } catch (e: any) {
+    if (e !== 'cancel' && e !== 'close') {
+      ElMessage.error(e?.message || '重试失败')
+    }
+  } finally {
+    loading.value = false
+  }
+}
 
 // 显示错误详情
 const showErrorDetail = async (row: any) => {

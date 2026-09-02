@@ -210,6 +210,11 @@ export const analysisApi = {
     return request.post(`/api/analysis/tasks/${taskId}/mark-failed`, {})
   },
 
+  // 手动重试失败任务
+  retryTask(taskId: string): Promise<ApiResponse<any>> {
+    return request.post(`/api/analysis/tasks/${taskId}/retry`, {})
+  },
+
   // 删除任务
   deleteTask(taskId: string): Promise<{ success: boolean; message: string }> {
     return request.delete(`/api/analysis/tasks/${taskId}`)
