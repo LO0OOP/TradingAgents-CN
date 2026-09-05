@@ -760,7 +760,9 @@ class SimpleAnalysisService:
     async def create_analysis_task(
         self,
         user_id: str,
-        request: SingleAnalysisRequest
+        request: SingleAnalysisRequest,
+        batch_id: Optional[str] = None,
+        batch_title: Optional[str] = None
     ) -> Dict[str, Any]:
         """创建分析任务（立即返回，不执行分析）"""
         try:
@@ -810,6 +812,8 @@ class SimpleAnalysisService:
                         "status": "pending",
                         "progress": 0,
                         "created_at": datetime.utcnow(),
+                        "batch_id": batch_id,
+                        "batch_title": batch_title,
                     }},
                     upsert=True
                 )
@@ -2752,8 +2756,21 @@ class SimpleAnalysisService:
                 logger.warning(f"⚠️ 获取股票名称失败: {stock_symbol} - {e}")
                 stock_name = stock_symbol
 
+            # 🔥 读取任务的批量归属信息（批量分析任务名/批次ID）
+            batch_id = None
+            batch_title = None
+            try:
+                task_doc = await db.analysis_tasks.find_one({"task_id": task_id})
+                if task_doc:
+                    batch_id = task_doc.get("batch_id")
+                    batch_title = task_doc.get("batch_title")
+            except Exception:
+                logger.warning(f"⚠️ 读取任务批量归属信息失败: {task_id}")
+
             # 构建文档（与web目录的MongoDBReportManager保持一致）
             document = {
+                "batch_id": batch_id,
+                "batch_title": batch_title,
                 "analysis_id": analysis_id,
                 "stock_symbol": stock_symbol,
                 "stock_name": stock_name,  # 🔥 添加股票名称字段

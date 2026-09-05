@@ -835,7 +835,7 @@ async def submit_batch_analysis(
             single_req = _build_batch_single_request(symbol, request.parameters)
 
             try:
-                create_res = await simple_service.create_analysis_task(user["id"], single_req)
+                create_res = await simple_service.create_analysis_task(user["id"], single_req, batch_id=batch_id, batch_title=request.title)
                 task_id = create_res.get("task_id")
                 if not task_id:
                     raise RuntimeError(f"创建任务失败：未返回task_id (symbol={symbol})")

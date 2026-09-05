@@ -214,9 +214,31 @@ async def get_reports_list(
                 "summary": doc.get("summary", ""),
                 "file_size": len(str(doc.get("reports", {}))),  # 估算大小
                 "source": doc.get("source", "unknown"),
-                "task_id": doc.get("task_id", "")
+                "task_id": doc.get("task_id", ""),
+                "batch_id": doc.get("batch_id"),
+                "batch_title": doc.get("batch_title"),
+                "decision": doc.get("decision", {})
             }
             reports.append(report)
+
+        # 兼容旧数据：批量任务标题缺失时，从 analysis_batches 批量补全
+        try:
+            missing_batch_ids = [
+                r.get("batch_id") for r in reports
+                if r.get("batch_id") and not r.get("batch_title")
+            ]
+            if missing_batch_ids:
+                batch_cursor = db.analysis_batches.find({"batch_id": {"$in": missing_batch_ids}})
+                batch_title_map = {}
+                async for b in batch_cursor:
+                    if b.get("batch_id") and b.get("title"):
+                        batch_title_map[b["batch_id"]] = b["title"]
+                if batch_title_map:
+                    for r in reports:
+                        if not r.get("batch_title") and r.get("batch_id") in batch_title_map:
+                            r["batch_title"] = batch_title_map[r["batch_id"]]
+        except Exception as e:
+            logger.warning(f"⚠️ 补全批量任务标题失败: {e}")
 
         logger.info(f"✅ 查询完成: 总数={total}, 返回={len(reports)}")
 
@@ -255,7 +277,7 @@ async def get_report_detail(
             logger.info(f"⚠️ 未在analysis_reports找到，尝试从analysis_tasks还原: {report_id}")
             tasks_doc = await db.analysis_tasks.find_one(
                 {"$or": [{"task_id": report_id}, {"result.analysis_id": report_id}]},
-                {"result": 1, "task_id": 1, "stock_code": 1, "created_at": 1, "completed_at": 1}
+                {"result": 1, "task_id": 1, "stock_code": 1, "created_at": 1, "completed_at": 1, "batch_id": 1, "batch_title": 1}
             )
             if not tasks_doc or not tasks_doc.get("result"):
                 raise HTTPException(status_code=404, detail="报告不存在")
@@ -299,7 +321,10 @@ async def get_report_detail(
                 "risk_level": r.get("risk_level", "中等"),
                 "key_points": r.get("key_points", []),
                 "execution_time": r.get("execution_time", 0),
-                "tokens_used": r.get("tokens_used", 0)
+                "tokens_used": r.get("tokens_used", 0),
+                "batch_id": tasks_doc.get("batch_id"),
+                "batch_title": tasks_doc.get("batch_title"),
+                "decision": r.get("decision", {})
             }
         else:
             # 转换为详细格式（analysis_reports 命中）
@@ -337,8 +362,20 @@ async def get_report_detail(
                 "risk_level": doc.get("risk_level", "中等"),
                 "key_points": doc.get("key_points", []),
                 "execution_time": doc.get("execution_time", 0),
-                "tokens_used": doc.get("tokens_used", 0)
+                "tokens_used": doc.get("tokens_used", 0),
+                "batch_id": doc.get("batch_id"),
+                "batch_title": doc.get("batch_title"),
+                "decision": doc.get("decision", {})
             }
+
+        # 兼容旧数据：若报告只有 batch_id 而没有 batch_title，从 analysis_batches 补全
+        if not report.get("batch_title") and report.get("batch_id"):
+            try:
+                batch_doc = await db.analysis_batches.find_one({"batch_id": report["batch_id"]})
+                if batch_doc and batch_doc.get("title"):
+                    report["batch_title"] = batch_doc.get("title")
+            except Exception:
+                logger.warning(f"⚠️ 补全批次标题失败: {report.get('batch_id')}")
 
         return {
             "success": True,

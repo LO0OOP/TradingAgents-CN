@@ -19,19 +19,39 @@
               <el-tag type="primary">{{ report.stock_symbol }}</el-tag>
               <el-tag v-if="report.stock_name && report.stock_name !== report.stock_symbol" type="info">{{ report.stock_name }}</el-tag>
               <el-tag type="success">{{ getStatusText(report.status) }}</el-tag>
+
+              <!-- 决策结果：买入/卖出/持有 -->
+              <el-tag :type="getDecisionTagType()" effect="dark" style="font-weight: 600;">
+                <el-icon style="margin-right: 2px;"><DataAnalysis /></el-icon>
+                {{ getDecisionAction() }}
+              </el-tag>
+
+              <!-- 批量分析任务名 -->
+              <span v-if="report.batch_title" class="meta-item">
+                <el-icon><Files /></el-icon>
+                {{ report.batch_title }}
+              </span>
+
               <span class="meta-item">
                 <el-icon><Calendar /></el-icon>
                 {{ formatTime(report.created_at) }}
               </span>
+
               <span class="meta-item">
-                <el-icon><User /></el-icon>
-                {{ formatAnalysts(report.analysts) }}
+                <el-icon><TrendCharts /></el-icon>
+                分析深度：{{ getResearchDepthText(report.research_depth) }}
               </span>
+
               <span v-if="report.model_info && report.model_info !== 'Unknown'" class="meta-item">
                 <el-icon><Cpu /></el-icon>
                 <el-tooltip :content="getModelDescription(report.model_info)" placement="top">
-                  <el-tag type="info" style="cursor: help;">{{ report.model_info }}</el-tag>
+                  <span style="cursor: help;">模型：{{ report.model_info }}</span>
                 </el-tooltip>
+              </span>
+
+              <span class="meta-item">
+                <el-icon><User /></el-icon>
+                {{ formatAnalysts(report.analysts) }}
               </span>
             </div>
           </div>
@@ -292,6 +312,14 @@ import type { CurrencyAmount } from '@/api/paper'
 
 type ReportModuleContent = string | Record<string, unknown>
 
+type ReportDecisionData = {
+  action?: string
+  confidence?: number
+  risk_score?: number
+  target_price?: number | null
+  reasoning?: string
+}
+
 type ReportDetailData = {
   id: string
   analysis_id?: string
@@ -308,6 +336,10 @@ type ReportDetailData = {
   key_points?: string[]
   summary?: string
   reports: Record<string, ReportModuleContent>
+  batch_id?: string
+  batch_title?: string
+  research_depth?: string | number
+  decision?: ReportDecisionData
 }
 
 // 路由和认证
@@ -779,6 +811,49 @@ const formatAnalysts = (analysts: string[]) => {
   }
 
   return analysts.map(analyst => analystNameMap[analyst] || analyst).join('、')
+}
+
+// 获取分析深度展示文案（兼容数字与字符串）
+const getResearchDepthText = (depth: string | number | undefined) => {
+  if (depth === undefined || depth === null || depth === '') return '标准'
+  const str = String(depth)
+  const numMap: Record<string, string> = {
+    '1': '快速', '2': '基础', '3': '标准', '4': '深度', '5': '全面'
+  }
+  if (numMap[str]) return numMap[str]
+  const enMap: Record<string, string> = {
+    quick: '快速', basic: '基础', standard: '标准', deep: '深度', comprehensive: '全面'
+  }
+  const lower = str.toLowerCase()
+  if (enMap[lower]) return enMap[lower]
+  return str
+}
+
+// 获取决策结果（买入/卖出/持有）
+const getDecisionAction = (): string => {
+  if (!report.value) return '持有'
+  const raw = report.value.decision?.action
+  const actionMap: Record<string, string> = {
+    BUY: '买入', SELL: '卖出', HOLD: '持有',
+    buy: '买入', sell: '卖出', hold: '持有',
+    买入: '买入', 卖出: '卖出', 持有: '持有'
+  }
+  if (raw && actionMap[raw]) return actionMap[raw]
+
+  // 兜底：从 recommendation 文案中解析
+  const rec = report.value.recommendation || ''
+  if (/买入/.test(rec)) return '买入'
+  if (/卖出/.test(rec)) return '卖出'
+  if (/持有/.test(rec)) return '持有'
+  return '持有'
+}
+
+// 决策结果的标签颜色
+const getDecisionTagType = (): 'success' | 'danger' | 'warning' => {
+  const action = getDecisionAction()
+  if (action.includes('买入')) return 'success'
+  if (action.includes('卖出')) return 'danger'
+  return 'warning'
 }
 
 // 获取模型的详细描述（从后端配置中获取）

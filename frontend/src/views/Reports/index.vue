@@ -85,27 +85,28 @@
             </div>
           </template>
         </el-table-column>
-        
-        <el-table-column prop="type" label="报告类型" width="120">
+
+        <el-table-column label="批量任务" min-width="140">
           <template #default="{ row }">
-            <el-tag :type="getTypeColor(row.type)">
-              {{ getTypeText(row.type) }}
+            <el-tag v-if="row.batch_title" type="primary" size="small" effect="plain">
+              {{ row.batch_title }}
+            </el-tag>
+            <span v-else class="text-gray">-</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="决策" width="110">
+          <template #default="{ row }">
+            <el-tag :type="getDecisionTagType(row)" effect="dark" size="small">
+              {{ getDecisionAction(row) }}
             </el-tag>
           </template>
         </el-table-column>
-        
-        <el-table-column prop="format" label="格式" width="100">
+
+        <el-table-column label="分析深度" width="110">
           <template #default="{ row }">
-            <el-tag size="small" effect="plain">
-              {{ row.format.toUpperCase() }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="status" label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)">
-              {{ getStatusText(row.status) }}
+            <el-tag type="warning" size="small" effect="plain">
+              {{ getResearchDepthText(row.research_depth) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -116,6 +117,22 @@
               {{ row.model_info }}
             </el-tag>
             <span v-else class="text-gray">-</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="format" label="格式" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" effect="plain">
+              {{ row.format.toUpperCase() }}
+            </el-tag>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="status" label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="getStatusType(row.status)">
+              {{ getStatusText(row.status) }}
+            </el-tag>
           </template>
         </el-table-column>
 
@@ -198,6 +215,14 @@ import { useAuthStore } from '@/stores/auth'
 
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
 
+type ReportDecision = {
+  action?: string
+  confidence?: number
+  risk_score?: number
+  target_price?: number | null
+  reasoning?: string
+}
+
 type ReportListItem = {
   id: string
   title: string
@@ -209,6 +234,10 @@ type ReportListItem = {
   model_info?: string
   created_at: string
   analysis_date?: string
+  batch_id?: string
+  batch_title?: string
+  research_depth?: string | number
+  decision?: ReportDecision
 }
 
 // 使用路由和认证store
@@ -430,24 +459,6 @@ const refreshReports = () => {
   fetchReports()
 }
 
-const getTypeColor = (type: string): TagType => {
-  const colorMap: Record<string, TagType> = {
-    single: 'primary',
-    batch: 'success',
-    portfolio: 'warning'
-  }
-  return colorMap[type] || 'info'
-}
-
-const getTypeText = (type: string) => {
-  const textMap: Record<string, string> = {
-    single: '单股分析',
-    batch: '批量分析',
-    portfolio: '投资组合'
-  }
-  return textMap[type] || type
-}
-
 const getStatusType = (status: string): TagType => {
   const statusMap: Record<string, TagType> = {
     completed: 'success',
@@ -464,6 +475,42 @@ const getStatusText = (status: string) => {
     failed: '失败'
   }
   return statusMap[status] || status
+}
+
+// 获取分析深度展示文案（兼容数字与字符串）
+const getResearchDepthText = (depth: string | number | undefined) => {
+  if (depth === undefined || depth === null || depth === '') return '标准'
+  const str = String(depth)
+  const numMap: Record<string, string> = {
+    '1': '快速', '2': '基础', '3': '标准', '4': '深度', '5': '全面'
+  }
+  if (numMap[str]) return numMap[str]
+  const enMap: Record<string, string> = {
+    quick: '快速', basic: '基础', standard: '标准', deep: '深度', comprehensive: '全面'
+  }
+  const lower = str.toLowerCase()
+  if (enMap[lower]) return enMap[lower]
+  return str
+}
+
+// 获取决策结果（买入/卖出/持有）
+const getDecisionAction = (row: ReportListItem): string => {
+  const raw = row.decision?.action
+  const actionMap: Record<string, string> = {
+    BUY: '买入', SELL: '卖出', HOLD: '持有',
+    buy: '买入', sell: '卖出', hold: '持有',
+    买入: '买入', 卖出: '卖出', 持有: '持有'
+  }
+  if (raw && actionMap[raw]) return actionMap[raw]
+  return '持有'
+}
+
+// 决策结果的标签颜色
+const getDecisionTagType = (row: ReportListItem): 'success' | 'danger' | 'warning' => {
+  const action = getDecisionAction(row)
+  if (action.includes('买入')) return 'success'
+  if (action.includes('卖出')) return 'danger'
+  return 'warning'
 }
 
 import { formatDateTime } from '@/utils/datetime'
