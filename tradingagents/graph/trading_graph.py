@@ -883,11 +883,11 @@ class TradingAgentsGraph:
         # Log state
         self._log_state(trade_date, final_state)
 
-        # 获取模型信息
+        # 获取模型信息（只保留模型名，去掉类名前缀）
         model_info = ""
         try:
             if hasattr(self.deep_thinking_llm, 'model_name'):
-                model_info = f"{self.deep_thinking_llm.__class__.__name__}:{self.deep_thinking_llm.model_name}"
+                model_info = self.deep_thinking_llm.model_name
             else:
                 model_info = self.deep_thinking_llm.__class__.__name__
         except Exception:

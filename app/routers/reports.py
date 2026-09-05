@@ -98,6 +98,16 @@ def _build_report_query(report_id: str) -> Dict[str, Any]:
         pass
     return {"$or": ors}
 
+
+def _normalize_model_info(model_info: Optional[str]) -> str:
+    """去掉模型信息里的类名前缀，如 NormalizedChatOpenAI:qwen3.8-max -> qwen3.8-max"""
+    if not model_info:
+        return "Unknown"
+    if ":" in model_info:
+        return model_info.split(":", 1)[1]
+    return model_info
+
+
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 class ReportFilter(BaseModel):
@@ -203,7 +213,7 @@ async def get_reports_list(
                 "stock_code": stock_code,
                 "stock_name": stock_name,
                 "market_type": market_type,  # 🔥 添加市场类型字段
-                "model_info": doc.get("model_info", "Unknown"),  # 🔥 添加模型信息字段
+                "model_info": _normalize_model_info(doc.get("model_info")),  # 🔥 添加模型信息字段
                 "type": "single",  # 目前主要是单股分析
                 "format": "markdown",  # 主要格式
                 "status": doc.get("status", "completed"),
@@ -305,7 +315,7 @@ async def get_report_detail(
                 "analysis_id": r.get("analysis_id", ""),
                 "stock_symbol": stock_symbol,
                 "stock_name": stock_name,  # 🔥 添加股票名称字段
-                "model_info": r.get("model_info", "Unknown"),  # 🔥 添加模型信息字段
+                "model_info": _normalize_model_info(r.get("model_info")),  # 🔥 添加模型信息字段
                 "analysis_date": r.get("analysis_date", ""),
                 "status": r.get("status", "completed"),
                 "created_at": to_iso(created_at_tz),
@@ -346,7 +356,7 @@ async def get_report_detail(
                 "analysis_id": doc.get("analysis_id", ""),
                 "stock_symbol": stock_symbol,
                 "stock_name": stock_name,  # 🔥 添加股票名称字段
-                "model_info": doc.get("model_info", "Unknown"),  # 🔥 添加模型信息字段
+                "model_info": _normalize_model_info(doc.get("model_info")),  # 🔥 添加模型信息字段
                 "analysis_date": doc.get("analysis_date", ""),
                 "status": doc.get("status", "completed"),
                 "created_at": created_at_tz.isoformat() if created_at_tz else str(created_at),
