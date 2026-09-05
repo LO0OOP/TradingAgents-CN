@@ -3,6 +3,7 @@
 """
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from pathlib import Path
@@ -108,6 +109,51 @@ def _normalize_model_info(model_info: Optional[str]) -> str:
     return model_info
 
 
+async def _resolve_stock_codes(keyword: str, db) -> List[str]:
+    """把关键词（名称/代码）解析成股票代码列表，用于报告按名称搜索
+
+    报告文档中 stock_symbol 可能未存储 stock_name，导致按名称搜索漏报。
+    这里把名称解析为代码，再以 stock_symbol $in 匹配，保证名称搜索与代码搜索结果一致。
+    """
+    pattern = {"$regex": re.escape(keyword), "$options": "i"}
+    codes = set()
+
+    collections = ["stock_basic_info", "stock_basic_info_hk", "stock_basic_info_us"]
+    for coll_name in collections:
+        try:
+            coll = db[coll_name]
+            cursor = coll.find({
+                "$or": [
+                    {"code": pattern},
+                    {"symbol": pattern},
+                    {"name": pattern},
+                    {"name_en": pattern}
+                ]
+            })
+            async for doc in cursor:
+                for field in ("code", "symbol"):
+                    v = doc.get(field)
+                    if not v:
+                        continue
+                    s = str(v).strip()
+                    if not s:
+                        continue
+                    codes.add(s)
+                    codes.add(s.upper())
+                    # 去掉交易所后缀（.HK/.SH/.SZ/.SS）
+                    up = s.upper()
+                    for suffix in (".HK", ".SH", ".SZ", ".SS"):
+                        if up.endswith(suffix):
+                            codes.add(up[: -len(suffix)])
+                    # A股6位补零
+                    if s.isdigit():
+                        codes.add(s.zfill(6))
+        except Exception as e:
+            logger.debug(f"⚠️ 解析股票代码失败 {coll_name}: {e}")
+
+    return list(codes)
+
+
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 class ReportFilter(BaseModel):
@@ -148,11 +194,20 @@ async def get_reports_list(
 
         # 搜索关键词
         if search_keyword:
-            query["$or"] = [
+            or_conditions = [
                 {"stock_symbol": {"$regex": search_keyword, "$options": "i"}},
+                {"stock_name": {"$regex": search_keyword, "$options": "i"}},
                 {"analysis_id": {"$regex": search_keyword, "$options": "i"}},
                 {"summary": {"$regex": search_keyword, "$options": "i"}}
             ]
+            # 名称→代码解析：保证按名称搜索与按代码搜索结果一致
+            try:
+                resolved_codes = await _resolve_stock_codes(search_keyword, db)
+                if resolved_codes:
+                    or_conditions.append({"stock_symbol": {"$in": resolved_codes}})
+            except Exception as e:
+                logger.warning(f"⚠️ 名称→代码解析失败: {e}")
+            query["$or"] = or_conditions
 
         # 市场筛选
         if market_filter:
