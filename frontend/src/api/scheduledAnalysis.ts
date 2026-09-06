@@ -26,9 +26,27 @@ export interface GroupPayload {
   parameters: Record<string, any>
 }
 
+export interface EmailConfig {
+  enabled: boolean
+  smtp_host: string
+  smtp_port: number
+  sender: string
+  auth_code: string
+  recipients: string[]
+  attach_pdf: boolean
+}
+
 export const scheduledAnalysisApi = {
   listGroups(): Promise<ApiResponse<ScheduledGroup[]>> {
     return request.get('/api/scheduled-analysis/groups')
+  },
+
+  getEmailConfig(): Promise<ApiResponse<EmailConfig>> {
+    return request.get('/api/scheduled-analysis/email-config')
+  },
+
+  updateEmailConfig(data: Partial<EmailConfig>): Promise<ApiResponse<EmailConfig>> {
+    return request.put('/api/scheduled-analysis/email-config', data)
   },
 
   createGroup(data: GroupPayload): Promise<ApiResponse<ScheduledGroup>> {

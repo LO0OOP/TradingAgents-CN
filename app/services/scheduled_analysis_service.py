@@ -2,6 +2,7 @@
 
 管理定时分析任务组（股票 + 触发时间 + 分析参数），并在触发时间复用批量分析执行。
 """
+import asyncio
 import uuid
 import logging
 from typing import Any, Dict, List, Optional
@@ -10,6 +11,7 @@ from datetime import datetime
 from app.core.database import get_mongo_db
 from app.models.analysis import AnalysisParameters
 from app.services.simple_analysis_service import get_simple_analysis_service
+from app.services import email_service
 from app.utils.timezone import now_tz
 
 logger = logging.getLogger("webapi")
@@ -135,14 +137,64 @@ async def _mark_run(group_id: str) -> None:
     )
 
 
+async def _wait_for_completion(task_ids: List[str]) -> List[Dict[str, Any]]:
+    """轮询任务完成情况，返回每个任务的结果文档（保持原始顺序）"""
+    db = get_mongo_db()
+    entries: Dict[str, Dict[str, Any]] = {}
+    pending = set(task_ids)
+    deadline = asyncio.get_running_loop().time() + 7200  # 最长等待 2 小时
+    while pending and asyncio.get_running_loop().time() < deadline:
+        for tid in list(pending):
+            task_doc = await db.analysis_tasks.find_one({"task_id": tid})
+            status = task_doc.get("status") if task_doc else None
+            if status in ("completed", "failed", "cancelled"):
+                if status == "completed":
+                    report_doc = await db.analysis_reports.find_one({"task_id": tid})
+                    entries[tid] = report_doc or {"task_id": tid, "status": "failed", "error": "报告未生成"}
+                else:
+                    entries[tid] = {"task_id": tid, "status": status, "error": (task_doc or {}).get("last_error", "")}
+                pending.discard(tid)
+        if pending:
+            await asyncio.sleep(10)
+    for tid in task_ids:
+        if tid not in entries:
+            entries[tid] = {"task_id": tid, "status": "timeout", "error": "等待完成超时"}
+    return [entries[tid] for tid in task_ids]
+
+
+async def _notify_after_completion(group: Dict[str, Any], task_ids: List[str]) -> None:
+    """等待任务完成并发送邮件通知（后台执行）"""
+    try:
+        entries = await _wait_for_completion(task_ids)
+        await email_service.send_report_email(group.get("name") or "定时分析", entries)
+    except Exception as e:
+        logger.error(f"❌ 定时分析结果邮件通知失败: {e}", exc_info=True)
+
+
+def _schedule_group_run(group: Dict[str, Any]) -> None:
+    """后台执行任务组并在完成后发邮件"""
+    group_id = group.get("group_id")
+
+    async def _job():
+        try:
+            result = await _run_group(group)
+            await _mark_run(group_id)
+            task_ids = (result or {}).get("task_ids") or []
+            if task_ids:
+                asyncio.create_task(_notify_after_completion(group, task_ids))
+        except Exception as e:
+            logger.error(f"❌ 定时分析任务组执行失败 {group_id}: {e}", exc_info=True)
+
+    asyncio.create_task(_job())
+
+
 async def run_group_now(group_id: str) -> Optional[Dict[str, Any]]:
-    """手动立即执行某个任务组"""
+    """手动立即执行某个任务组（后台执行，完成后发邮件）"""
     group = await get_group(group_id)
     if not group:
         return None
-    result = await _run_group(group)
-    await _mark_run(group_id)
-    return result
+    _schedule_group_run(group)
+    return {"started": True, "group_id": group_id}
 
 
 async def run_due_groups() -> int:
@@ -160,13 +212,9 @@ async def run_due_groups() -> int:
             if doc.get("last_run_key") == run_key:
                 continue  # 本分钟内已触发过，避免重复
             group_id = doc.get("group_id")
-            try:
-                await _run_group(doc)
-                await _mark_run(group_id)
-                run_count += 1
-                logger.info(f"⏰ 定时分析任务组已触发: {group_id}")
-            except Exception as e:
-                logger.error(f"❌ 定时分析任务组执行失败 {group_id}: {e}", exc_info=True)
+            _schedule_group_run(doc)
+            run_count += 1
+            logger.info(f"⏰ 定时分析任务组已触发: {group_id}")
         return run_count
     except Exception as e:
         logger.error(f"❌ 定时分析调度检查失败: {e}", exc_info=True)

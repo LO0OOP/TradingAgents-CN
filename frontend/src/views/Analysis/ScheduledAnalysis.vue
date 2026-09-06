@@ -18,6 +18,10 @@
           <el-icon><Refresh /></el-icon>
           刷新
         </el-button>
+        <el-button @click="openEmailSettings">
+          <el-icon><Message /></el-icon>
+          邮件设置
+        </el-button>
       </div>
 
       <el-table :data="groups" v-loading="loading" style="width: 100%">
@@ -135,14 +139,45 @@
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 邮件推送设置对话框 -->
+    <el-dialog v-model="emailDialogVisible" title="邮件推送设置" width="560px">
+      <el-form :model="emailForm" label-width="110px">
+        <el-form-item label="启用邮件推送">
+          <el-switch v-model="emailForm.enabled" />
+        </el-form-item>
+        <el-form-item label="SMTP服务器">
+          <el-input v-model="emailForm.smtp_host" placeholder="smtp.163.com" />
+        </el-form-item>
+        <el-form-item label="端口">
+          <el-input-number v-model="emailForm.smtp_port" :min="1" :max="65535" controls-position="right" style="width: 160px" />
+        </el-form-item>
+        <el-form-item label="发件邮箱">
+          <el-input v-model="emailForm.sender" placeholder="you@163.com" />
+        </el-form-item>
+        <el-form-item label="授权码">
+          <el-input v-model="emailForm.auth_code" type="password" show-password placeholder="163 邮箱 SMTP 授权码" />
+        </el-form-item>
+        <el-form-item label="收件邮箱">
+          <el-input v-model="emailForm.recipientsText" type="textarea" :rows="2" placeholder="多个邮箱用逗号或换行分隔" />
+        </el-form-item>
+        <el-form-item label="附带PDF">
+          <el-switch v-model="emailForm.attach_pdf" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="emailDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingEmail" @click="saveEmailConfig">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Clock, Plus, Refresh } from '@element-plus/icons-vue'
-import { scheduledAnalysisApi, type ScheduledGroup } from '@/api/scheduledAnalysis'
+import { Clock, Plus, Refresh, Message } from '@element-plus/icons-vue'
+import { scheduledAnalysisApi, type ScheduledGroup, type EmailConfig } from '@/api/scheduledAnalysis'
 import { ANALYSTS, DEFAULT_ANALYSTS, convertAnalystNamesToIds, convertAnalystIdsToNames } from '@/constants/analysts'
 import { configApi } from '@/api/config'
 import ModelConfig from '@/components/ModelConfig.vue'
@@ -154,6 +189,18 @@ const saving = ref(false)
 const groups = ref<ScheduledGroup[]>([])
 const dialogVisible = ref(false)
 const editingId = ref('')
+
+const emailDialogVisible = ref(false)
+const savingEmail = ref(false)
+const emailForm = reactive({
+  enabled: false,
+  smtp_host: 'smtp.163.com',
+  smtp_port: 465,
+  sender: '',
+  auth_code: '',
+  recipientsText: '',
+  attach_pdf: true
+})
 
 const modelSettings = ref({
   quickAnalysisModel: 'qwen-turbo',
@@ -350,6 +397,49 @@ const remove = async (row: ScheduledGroup) => {
     await loadGroups()
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e?.message || '删除失败')
+  }
+}
+
+const openEmailSettings = async () => {
+  try {
+    const res = await scheduledAnalysisApi.getEmailConfig()
+    const cfg: EmailConfig = res.data || ({} as EmailConfig)
+    emailForm.enabled = !!cfg.enabled
+    emailForm.smtp_host = cfg.smtp_host || 'smtp.163.com'
+    emailForm.smtp_port = cfg.smtp_port || 465
+    emailForm.sender = cfg.sender || ''
+    emailForm.auth_code = cfg.auth_code || ''
+    emailForm.recipientsText = (cfg.recipients || []).join(', ')
+    emailForm.attach_pdf = cfg.attach_pdf !== undefined ? cfg.attach_pdf : true
+    emailDialogVisible.value = true
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载邮件配置失败')
+  }
+}
+
+const saveEmailConfig = async () => {
+  const recipients = emailForm.recipientsText
+    .split(/[\s,;，；]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  savingEmail.value = true
+  try {
+    await scheduledAnalysisApi.updateEmailConfig({
+      enabled: emailForm.enabled,
+      smtp_host: emailForm.smtp_host.trim(),
+      smtp_port: emailForm.smtp_port,
+      sender: emailForm.sender.trim(),
+      auth_code: emailForm.auth_code.trim(),
+      recipients,
+      attach_pdf: emailForm.attach_pdf
+    })
+    ElMessage.success('邮件配置已保存')
+    emailDialogVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存邮件配置失败')
+  } finally {
+    savingEmail.value = false
   }
 }
 

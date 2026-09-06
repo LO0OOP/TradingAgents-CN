@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from .auth_db import get_current_user
 from app.services import scheduled_analysis_service as svc
+from app.services import email_service
 
 router = APIRouter(prefix="/api/scheduled-analysis", tags=["scheduled-analysis"])
 
@@ -70,3 +71,25 @@ async def run_group(group_id: str, user: dict = Depends(get_current_user)):
     if result is None:
         raise HTTPException(status_code=404, detail="任务组不存在")
     return {"success": True, "data": result}
+
+
+class EmailConfigPayload(BaseModel):
+    enabled: Optional[bool] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    sender: Optional[str] = None
+    auth_code: Optional[str] = None
+    recipients: Optional[List[str]] = None
+    attach_pdf: Optional[bool] = None
+
+
+@router.get("/email-config")
+async def get_email_config(user: dict = Depends(get_current_user)):
+    cfg = await email_service.get_email_config()
+    return {"success": True, "data": cfg}
+
+
+@router.put("/email-config")
+async def update_email_config(payload: EmailConfigPayload, user: dict = Depends(get_current_user)):
+    cfg = await email_service.update_email_config(payload.model_dump(exclude_none=True))
+    return {"success": True, "data": cfg}
