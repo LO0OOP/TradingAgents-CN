@@ -41,7 +41,7 @@
         <el-table-column label="深度/模型" min-width="200">
           <template #default="{ row }">
             <el-tag type="warning" size="small">{{ depthText(row.parameters?.research_depth) }}</el-tag>
-            <span class="text-gray">{{ row.parameters?.quick_analysis_model || '-' }}</span>
+            <span class="text-gray">{{ row.parameters?.deep_analysis_model || '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="90">
