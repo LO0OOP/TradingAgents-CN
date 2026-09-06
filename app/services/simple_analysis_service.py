@@ -840,6 +840,56 @@ class SimpleAnalysisService:
             logger.error(f"❌ 创建分析任务失败: {e}")
             raise
 
+    async def run_batch_analysis(
+        self,
+        user_id: str,
+        symbols: List[str],
+        parameters: Optional[AnalysisParameters] = None,
+        title: str = "定时分析",
+        batch_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """执行批量分析（供定时任务复用，逻辑与 /api/analysis/batch 一致）
+
+        为每只股票创建单股任务并并发执行，立即返回任务列表。
+        """
+        from tradingagents.utils.stock_utils import StockUtils
+
+        batch_id = batch_id or str(uuid.uuid4())
+        market_map = {"china_a": "A股", "hong_kong": "港股", "us": "美股"}
+
+        def _build_request(symbol: str) -> SingleAnalysisRequest:
+            info = StockUtils.get_market_info(symbol)
+            inferred = market_map.get(info.get("market")) if isinstance(info, dict) else None
+            task_parameters = parameters.model_copy(deep=True) if parameters else AnalysisParameters()
+            if inferred:
+                task_parameters.market_type = inferred
+            return SingleAnalysisRequest(symbol=symbol, stock_code=symbol, parameters=task_parameters)
+
+        task_ids: List[str] = []
+        for symbol in symbols:
+            single_req = _build_request(symbol)
+            res = await self.create_analysis_task(user_id, single_req, batch_id=batch_id, batch_title=title)
+            task_ids.append(res["task_id"])
+
+        async def _run_all():
+            tasks = []
+            for i, symbol in enumerate(symbols):
+                single_req = _build_request(symbol)
+                tid = task_ids[i]
+
+                async def _one(tid: str, req: SingleAnalysisRequest):
+                    try:
+                        await self.execute_analysis_background(tid, user_id, req)
+                    except Exception as e:
+                        logger.error(f"❌ [批量分析] 执行失败 {tid}: {e}", exc_info=True)
+
+                tasks.append(asyncio.create_task(_one(tid, single_req)))
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.create_task(_run_all())
+        logger.info(f"🚀 [批量分析] 已启动 {len(task_ids)} 个并发任务 (batch_id={batch_id})")
+        return {"batch_id": batch_id, "task_ids": task_ids, "total": len(task_ids)}
+
     async def execute_analysis_background(
         self,
         task_id: str,

@@ -37,6 +37,7 @@ from app.routers import multi_market_stocks as multi_market_stocks_router
 from app.routers import notifications as notifications_router
 from app.routers import websocket_notifications as websocket_notifications_router
 from app.routers import scheduler as scheduler_router
+from app.routers import scheduled_analysis as scheduled_analysis_router
 from app.routers import quotes as quotes_router
 from app.services.basics_sync_service import get_basics_sync_service
 from app.services.multi_source_basics_sync_service import MultiSourceBasicsSyncService
@@ -592,6 +593,17 @@ async def lifespan(app: FastAPI):
         else:
             logger.info(f"📰 新闻数据同步已配置（仅自选股）: {settings.NEWS_SYNC_CRON}")
 
+        # 定时分析任务组：每分钟检查并执行到期任务组
+        from app.services.scheduled_analysis_service import run_due_groups
+        scheduler.add_job(
+            run_due_groups,
+            IntervalTrigger(minutes=1, timezone=settings.TIMEZONE),
+            id="scheduled_analysis_runner",
+            name="定时分析任务组调度",
+            replace_existing=True,
+        )
+        logger.info("⏰ 定时分析任务组调度已启动（每分钟检查）")
+
         scheduler.start()
 
         # 设置调度器实例到服务中，以便API可以管理任务
@@ -737,6 +749,7 @@ app.include_router(websocket_notifications_router.router, prefix="/api", tags=["
 
 # 定时任务管理
 app.include_router(scheduler_router.router, tags=["scheduler"])
+app.include_router(scheduled_analysis_router.router, tags=["scheduled-analysis"])
 app.include_router(quotes_router.router, prefix="/api", tags=["quotes"])
 
 app.include_router(sse.router, prefix="/api/stream", tags=["streaming"])
