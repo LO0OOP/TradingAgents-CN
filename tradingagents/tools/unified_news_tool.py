@@ -286,55 +286,18 @@ class UnifiedNewsAnalyzer:
             return False
 
     def _get_a_share_news(self, stock_code: str, max_news: int, model_info: str = "") -> str:
-        """获取A股新闻"""
+        """获取A股新闻（优先实时/akshare，失败回退缓存）"""
         logger.info(f"[统一新闻工具] 获取A股 {stock_code} 新闻")
 
         # 获取当前日期
         curr_date = datetime.now().strftime("%Y-%m-%d")
 
-        # 优先级0: 从数据库获取新闻（最高优先级）
-        try:
-            logger.info(f"[统一新闻工具] 🔍 优先从数据库获取 {stock_code} 的新闻...")
-            db_news = self._get_news_from_database(stock_code, max_news)
-            if db_news:
-                logger.info(f"[统一新闻工具] ✅ 数据库新闻获取成功: {len(db_news)} 字符")
-                return self._format_news_result(db_news, "数据库缓存", model_info)
-            else:
-                logger.info(f"[统一新闻工具] ⚠️ 数据库中没有 {stock_code} 的新闻，尝试同步...")
-
-                # 🔥 数据库没有数据时，调用同步服务同步新闻
-                try:
-                    logger.info(f"[统一新闻工具] 📡 调用同步服务同步 {stock_code} 的新闻...")
-                    synced_news = self._sync_news_from_akshare(stock_code, max_news)
-
-                    if synced_news:
-                        logger.info(f"[统一新闻工具] ✅ 同步成功，重新从数据库获取...")
-                        # 重新从数据库获取
-                        db_news = self._get_news_from_database(stock_code, max_news)
-                        if db_news:
-                            logger.info(f"[统一新闻工具] ✅ 同步后数据库新闻获取成功: {len(db_news)} 字符")
-                            return self._format_news_result(db_news, "数据库缓存(新同步)", model_info)
-                    else:
-                        logger.warning(f"[统一新闻工具] ⚠️ 同步服务未返回新闻数据")
-
-                except Exception as sync_error:
-                    logger.warning(f"[统一新闻工具] ⚠️ 同步服务调用失败: {sync_error}")
-
-                logger.info(f"[统一新闻工具] ⚠️ 同步后仍无数据，尝试其他数据源...")
-        except Exception as e:
-            logger.warning(f"[统一新闻工具] 数据库新闻获取失败: {e}")
-
-        # 优先级1: 东方财富实时新闻
+        # 优先级0: 东方财富实时新闻（最新，优先）
         try:
             if hasattr(self.toolkit, 'get_realtime_stock_news'):
                 logger.info(f"[统一新闻工具] 尝试东方财富实时新闻...")
-                # 使用LangChain工具的正确调用方式：.invoke()方法和字典参数
                 result = self.toolkit.get_realtime_stock_news.invoke({"ticker": stock_code, "curr_date": curr_date})
-                
-                # 🔍 详细记录东方财富返回的内容
-                logger.info(f"[统一新闻工具] 📊 东方财富返回内容长度: {len(result) if result else 0} 字符")
-                logger.info(f"[统一新闻工具] 📋 东方财富返回内容预览 (前500字符): {result[:500] if result else 'None'}")
-                
+
                 if result and len(result.strip()) > 100:
                     logger.info(f"[统一新闻工具] ✅ 东方财富新闻获取成功: {len(result)} 字符")
                     return self._format_news_result(result, "东方财富实时新闻", model_info)
@@ -342,34 +305,55 @@ class UnifiedNewsAnalyzer:
                     logger.warning(f"[统一新闻工具] ⚠️ 东方财富新闻内容过短或为空")
         except Exception as e:
             logger.warning(f"[统一新闻工具] 东方财富新闻获取失败: {e}")
-        
-        # 优先级2: Google新闻（中文搜索）
+
+        # 优先级1: akshare 同步（拉取最新新闻并写入数据库）
+        try:
+            logger.info(f"[统一新闻工具] 📡 尝试同步 akshare 新闻...")
+            synced = self._sync_news_from_akshare(stock_code, max_news)
+            if synced:
+                db_news = self._get_news_from_database(stock_code, max_news)
+                if db_news:
+                    logger.info(f"[统一新闻工具] ✅ akshare 同步后获取到新闻")
+                    return self._format_news_result(db_news, "数据库缓存(akshare新同步)", model_info)
+            else:
+                logger.warning(f"[统一新闻工具] ⚠️ akshare 同步未返回新闻")
+        except Exception as e:
+            logger.warning(f"[统一新闻工具] akshare 同步失败: {e}")
+
+        # 优先级2: 数据库缓存（回退）
+        try:
+            db_news = self._get_news_from_database(stock_code, max_news)
+            if db_news:
+                logger.info(f"[统一新闻工具] ✅ 回退到数据库缓存: {len(db_news)} 字符")
+                return self._format_news_result(db_news, "数据库缓存", model_info)
+        except Exception as e:
+            logger.warning(f"[统一新闻工具] 数据库缓存读取失败: {e}")
+
+        # 优先级3: Google新闻（中文搜索）
         try:
             if hasattr(self.toolkit, 'get_google_news'):
                 logger.info(f"[统一新闻工具] 尝试Google新闻...")
                 query = f"{stock_code} 股票 新闻 财报 业绩"
-                # 使用LangChain工具的正确调用方式：.invoke()方法和字典参数
                 result = self.toolkit.get_google_news.invoke({"query": query, "curr_date": curr_date})
                 if result and len(result.strip()) > 50:
                     logger.info(f"[统一新闻工具] ✅ Google新闻获取成功: {len(result)} 字符")
                     return self._format_news_result(result, "Google新闻", model_info)
         except Exception as e:
             logger.warning(f"[统一新闻工具] Google新闻获取失败: {e}")
-        
-        # 优先级3: OpenAI全球新闻
+
+        # 优先级4: OpenAI全球新闻
         try:
             if hasattr(self.toolkit, 'get_global_news_openai'):
                 logger.info(f"[统一新闻工具] 尝试OpenAI全球新闻...")
-                # 使用LangChain工具的正确调用方式：.invoke()方法和字典参数
                 result = self.toolkit.get_global_news_openai.invoke({"curr_date": curr_date})
                 if result and len(result.strip()) > 50:
                     logger.info(f"[统一新闻工具] ✅ OpenAI新闻获取成功: {len(result)} 字符")
                     return self._format_news_result(result, "OpenAI全球新闻", model_info)
         except Exception as e:
             logger.warning(f"[统一新闻工具] OpenAI新闻获取失败: {e}")
-        
+
         return "❌ 无法获取A股新闻数据，所有新闻源均不可用"
-    
+
     def _get_hk_share_news(self, stock_code: str, max_news: int, model_info: str = "") -> str:
         """获取港股新闻"""
         logger.info(f"[统一新闻工具] 获取港股 {stock_code} 新闻")
