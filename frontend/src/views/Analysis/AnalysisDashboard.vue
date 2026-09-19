@@ -223,6 +223,9 @@
             <el-option label="策略二：买卖信号加减仓" :value="2" />
           </el-select>
         </el-form-item>
+        <el-form-item label="反向操作">
+          <el-switch v-model="backtestForm.reverse" active-text="卖信号买 / 买信号卖" />
+        </el-form-item>
         <el-form-item label="执行价">
           <el-select v-model="backtestForm.entry_mode" style="width: 150px">
             <el-option label="次日开盘价" value="next_open" />
@@ -246,7 +249,7 @@
       <template v-if="backtestData">
         <div class="backtest-summary">
           策略{{ backtestData.config.strategy }} ·
-          执行价：{{ backtestData.config.entry_mode === 'next_open' ? '次日开盘价' : '分析时价格' }}<template v-if="backtestData.config.strategy === 1"> · T+{{ backtestData.config.offset }}</template> ·
+          执行价：{{ backtestData.config.entry_mode === 'next_open' ? '次日开盘价' : '分析时价格' }}<template v-if="backtestData.config.strategy === 1"> · T+{{ backtestData.config.offset }}</template><template v-if="backtestData.config.reverse"> · 反向操作</template> ·
           命中报告 {{ backtestData.stats.total_reports }} 份
         </div>
 
@@ -426,7 +429,8 @@ const backtestForm = reactive({
   strategy: 1,
   budget: 50000,
   entry_mode: 'next_open' as 'next_open' | 'analysis_price',
-  offset: 5
+  offset: 5,
+  reverse: false
 })
 const backtestData = ref<AnalysisDashboardBacktestResponse | null>(null)
 
@@ -543,7 +547,8 @@ async function runBacktest() {
       offset: backtestForm.offset,
       strategy: backtestForm.strategy,
       budget: backtestForm.budget,
-      entry_mode: backtestForm.entry_mode
+      entry_mode: backtestForm.entry_mode,
+      reverse: backtestForm.reverse
     }
     if (query.symbol.trim()) params.symbol = query.symbol.trim()
     if (query.research_depth) params.research_depth = query.research_depth

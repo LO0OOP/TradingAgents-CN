@@ -1438,6 +1438,7 @@ async def get_analysis_dashboard_backtest(
     strategy: int = Query(1, ge=1, le=2, description="1=买入持有T+x卖出，2=买卖信号加减仓"),
     budget: float = Query(50000, ge=0, description="每笔买入预算（元）"),
     entry_mode: str = Query("next_open", description="next_open=次日开盘价，analysis_price=分析时价格"),
+    reverse: bool = Query(False, description="反向操作：收到卖出信号买入，收到买入信号卖出"),
 ):
     """按当前筛选条件对历史分析结论做简单回测。
 
@@ -1460,7 +1461,7 @@ async def get_analysis_dashboard_backtest(
             return {
                 "success": True,
                 "data": {
-                    "config": {"strategy": strategy, "offset": offset, "entry_mode": entry_mode, "budget": budget},
+                    "config": {"strategy": strategy, "offset": offset, "entry_mode": entry_mode, "budget": budget, "reverse": reverse},
                     "stats": {},
                     "legs": [],
                     "trades": [],
@@ -1470,6 +1471,8 @@ async def get_analysis_dashboard_backtest(
             }
 
         query: Dict[str, Any] = {"task_id": {"$in": task_ids}}
+        # 回测按 A 股口径（100 股一手、T+1 卖出），港美股直接忽略
+        query["market_type"] = {"$nin": ["港股", "美股"]}
         if symbol and symbol.strip():
             esc = re.escape(symbol.strip())
             query["$or"] = [
@@ -1517,6 +1520,8 @@ async def get_analysis_dashboard_backtest(
                 direction = 1
             elif "卖出" in action:
                 direction = -1
+            if reverse:
+                direction = -direction
 
             code = doc.get("stock_symbol")
             reports.append({
@@ -1816,7 +1821,7 @@ async def get_analysis_dashboard_backtest(
         return {
             "success": True,
             "data": {
-                "config": {"strategy": strategy, "offset": offset, "entry_mode": entry_mode, "budget": budget},
+                "config": {"strategy": strategy, "offset": offset, "entry_mode": entry_mode, "budget": budget, "reverse": reverse},
                 "stats": stats,
                 "legs": legs if strategy == 1 else [],
                 "trades": trades if strategy == 2 else [],
