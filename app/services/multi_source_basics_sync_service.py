@@ -140,6 +140,52 @@ class MultiSourceBasicsSyncService:
 
         return inserted, updated
 
+    async def _is_basic_info_up_to_date(
+        self,
+        db: AsyncIOMotorDatabase,
+        manager,
+        preferred_sources: List[str],
+    ) -> Optional[str]:
+        """判断本地 stock_basic_info 是否已覆盖最新交易日，若已最新则返回已同步交易日。"""
+        count = await db[COLLECTION_NAME].count_documents({})
+        if count <= 0:
+            return None
+
+        latest_doc_cursor = db[COLLECTION_NAME].find({}, {"_id": 0, "updated_at": 1}).sort("updated_at", -1).limit(1)
+        latest_docs = await latest_doc_cursor.to_list(length=1)
+        if not latest_docs or latest_docs[0].get("updated_at") is None:
+            return None
+
+        updated_at = latest_docs[0]["updated_at"]
+        if isinstance(updated_at, datetime):
+            last_updated_date = updated_at.date()
+        elif isinstance(updated_at, str):
+            try:
+                last_updated_date = datetime.fromisoformat(updated_at.replace("Z", "+00:00")).date()
+            except Exception:
+                return None
+        else:
+            return None
+
+        latest_trade_date = await asyncio.to_thread(
+            manager.find_latest_trade_date_with_fallback, preferred_sources
+        )
+        if not latest_trade_date:
+            return None
+        try:
+            latest_trade_day = datetime.strptime(str(latest_trade_date), "%Y%m%d").date()
+        except Exception:
+            return None
+
+        is_fresh = last_updated_date >= latest_trade_day
+        logger.info(
+            "📦 股票基础信息新鲜度检查: 本地最新更新日期=%s, 当前最新交易日=%s, 已最新=%s",
+            last_updated_date,
+            latest_trade_day,
+            is_fresh,
+        )
+        return str(latest_trade_date) if is_fresh else None
+
     async def run_full_sync(self, force: bool = False, preferred_sources: List[str] = None) -> Dict[str, Any]:
         """
         运行完整同步
@@ -148,13 +194,36 @@ class MultiSourceBasicsSyncService:
             force: 是否强制运行（即使已在运行中）
             preferred_sources: 优先使用的数据源列表
         """
+        db = get_mongo_db()
+
         async with self._lock:
             if self._running and not force:
                 logger.info("Multi-source stock basics sync already running; skip start")
                 return await self.get_status()
+
+            # 非强制同步：先做新鲜度检查，避免覆盖历史成功状态
+            if not force:
+                from app.services.data_sources.manager import DataSourceManager
+                manager = DataSourceManager()
+                available_adapters = manager.get_available_adapters()
+                if available_adapters:
+                    synced_trade_date = await self._is_basic_info_up_to_date(
+                        db, manager, preferred_sources
+                    )
+                    if synced_trade_date:
+                        stats = SyncStats()
+                        stats.started_at = datetime.now().isoformat()
+                        stats.last_trade_date = synced_trade_date
+                        stats.status = "up_to_date"
+                        stats.message = "本地股票基础信息已是最新，跳过全量同步"
+                        stats.total = await db[COLLECTION_NAME].count_documents({})
+                        stats.finished_at = datetime.now().isoformat()
+                        await self._persist_status(db, stats.__dict__.copy())
+                        logger.info("✅ 股票基础信息已是最新，跳过全量同步")
+                        return stats.__dict__
+
             self._running = True
 
-        db = get_mongo_db()
         stats = SyncStats()
         stats.started_at = datetime.now().isoformat()
         stats.status = "running"
@@ -174,6 +243,7 @@ class MultiSourceBasicsSyncService:
             # 如果指定了优先数据源，记录日志
             if preferred_sources:
                 logger.info(f"Using preferred data sources: {preferred_sources}")
+
 
             # Step 2: 尝试从数据源获取股票列表
             stock_df, source_used = await asyncio.to_thread(

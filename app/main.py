@@ -308,7 +308,8 @@ async def lifespan(app: FastAPI):
             preferred_sources = ["akshare", "baostock"]
             logger.info(f"📊 股票基础信息同步优先数据源: AKShare > BaoStock (Tushare已禁用)")
 
-        # 立即在启动后尝试一次（不阻塞）
+        # 启动阶段尝试一次同步；run_full_sync 内部会先检查本地数据是否已是最新，
+        # 已最新则直接跳过，避免每次启动都全量拉取导致 CPU 100%。
         async def run_sync_with_sources():
             await multi_source_service.run_full_sync(force=False, preferred_sources=preferred_sources)
 

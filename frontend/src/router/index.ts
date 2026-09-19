@@ -71,6 +71,12 @@ const routes: RouteRecordRaw[] = [
         name: 'ScheduledAnalysis',
         component: () => import('@/views/Analysis/ScheduledAnalysis.vue')
       },
+      {
+        path: 'dashboard',
+        name: 'AnalysisDashboard',
+        component: () => import('@/views/Analysis/AnalysisDashboard.vue'),
+        meta: { title: '分析结果看板', requiresAuth: true }
+      },
 
     ]
   },

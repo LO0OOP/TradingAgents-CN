@@ -485,3 +485,85 @@ export const getStockPlaceholder = (market: string): string => {
 
 
 
+
+// 分析结果看板
+export interface DashboardPricePoint {
+  trade_date: string
+  close: number | null
+}
+
+export interface AnalysisDashboardRecord {
+  analysis_id: string
+  stock_symbol: string
+  stock_name: string | null
+  analysis_date: string
+  analysis_price: number | null
+  action: string | null
+  research_depth: string
+  target_price: number | null
+  confidence: number | null
+  risk_score: number | null
+  market_type: string | null
+  latest_close: number | null
+  latest_trade_date: string | null
+  latest_pct_change: number | null
+}
+
+export interface AnalysisDashboardResponse {
+  records: AnalysisDashboardRecord[]
+  prices: Record<string, DashboardPricePoint[]>
+  total: number
+  page: number
+  page_size: number
+  offset: number
+}
+
+export const getAnalysisDashboard = async (params: {
+  symbol?: string
+  research_depth?: string
+  start_date?: string
+  end_date?: string
+  page?: number
+  page_size?: number
+  offset?: number
+}): Promise<AnalysisDashboardResponse> => {
+  const response = await request.get('/api/analysis/dashboard', { params })
+  return response.data
+}
+
+export interface AccuracyCounter {
+  total: number
+  evaluated: number
+  correct: number
+  wrong: number
+  no_price: number
+  pending?: number
+  accuracy: number | null
+}
+
+export interface ActionAccuracy {
+  total: number
+  spot_correct: number
+  spot_evaluated: number
+  t_plus_correct: number
+  t_plus_evaluated: number
+}
+
+export interface AnalysisDashboardAccuracyResponse {
+  offset: number
+  total_reports: number
+  spot: AccuracyCounter
+  t_plus_x: AccuracyCounter
+  by_action: Record<string, ActionAccuracy>
+}
+
+export const getAnalysisDashboardAccuracy = async (params: {
+  symbol?: string
+  research_depth?: string
+  start_date?: string
+  end_date?: string
+  offset?: number
+}): Promise<AnalysisDashboardAccuracyResponse> => {
+  const response = await request.get('/api/analysis/dashboard/accuracy', { params })
+  return response.data
+}

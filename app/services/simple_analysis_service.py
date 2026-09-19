@@ -32,6 +32,7 @@ from app.services.config_service import ConfigService
 from app.services.memory_state_manager import get_memory_state_manager, TaskStatus
 from app.services.redis_progress_tracker import RedisProgressTracker, get_progress_by_id
 from app.services.progress_log_handler import register_analysis_tracker, unregister_analysis_tracker
+from app.utils.analysis_metrics import normalize_research_depth, extract_analysis_price
 
 # 股票基础信息获取（用于补充显示名称）
 try:
@@ -2817,6 +2818,21 @@ class SimpleAnalysisService:
             except Exception:
                 logger.warning(f"⚠️ 读取任务批量归属信息失败: {task_id}")
 
+            # 归一化研究深度（历史数据存在数字/中文混合，落库时统一为中文）
+            research_depth = normalize_research_depth(result.get("research_depth", 1))
+
+            # 分析时价格：优先从市场报告解析，失败则按分析日期查当日收盘价兜底
+            analysis_price = extract_analysis_price(reports)
+            if analysis_price is None:
+                try:
+                    quote_doc = await db["stock_daily_quotes"].find_one(
+                        {"code": stock_symbol, "trade_date": timestamp.strftime('%Y-%m-%d')},
+                        {"_id": 0, "close": 1}
+                    )
+                    if quote_doc and quote_doc.get("close") is not None:
+                        analysis_price = float(quote_doc["close"])
+                except Exception:
+                    analysis_price = None
             # 构建文档（与web目录的MongoDBReportManager保持一致）
             document = {
                 "batch_id": batch_id,
@@ -2834,7 +2850,8 @@ class SimpleAnalysisService:
                 # 分析结果摘要
                 "summary": result.get("summary", ""),
                 "analysts": result.get("analysts", []),
-                "research_depth": result.get("research_depth", 1),
+                "research_depth": research_depth,
+                "analysis_price": analysis_price,
 
                 # 报告内容
                 "reports": reports,

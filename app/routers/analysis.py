@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
+import re
 import time
 import uuid
 import asyncio
@@ -22,6 +23,7 @@ from app.models.analysis import (
     SingleAnalysisRequest, BatchAnalysisRequest, AnalysisParameters,
     AnalysisTaskResponse, AnalysisBatchResponse, AnalysisHistoryQuery
 )
+from app.utils.analysis_metrics import normalize_analysis_price, normalize_research_depth
 
 router = APIRouter()
 logger = logging.getLogger("webapi")
@@ -1077,6 +1079,450 @@ async def get_user_analysis_history(
             "message": "历史查询成功"
         }
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+def _compute_t_plus_x(prices, analysis_date, offset):
+    """按交易日计算 T+x 收盘价。"""
+    if not prices:
+        return {"close": None, "trade_date": None, "status": "暂无行情数据"}
+    if analysis_date is None:
+        return {"close": None, "trade_date": None, "status": "待更新"}
+    future = [p for p in prices if p.get("trade_date") and p["trade_date"] > analysis_date]
+    if len(future) >= offset:
+        q = future[offset - 1]
+        return {"close": q.get("close"), "trade_date": q.get("trade_date"), "status": "ok"}
+    return {"close": None, "trade_date": None, "status": "待更新"}
+
+
+
+
+async def _load_cn_realtime_quotes(codes):
+    """读取 A 股实时行情缓存；缺失或过期时按需刷新，不阻塞 T+x 计算。"""
+    from app.services.market_quote_service import get_market_quote_service
+
+    if not codes:
+        return {}
+
+    cn_codes = []
+    for code in codes:
+        raw = str(code or "").strip()
+        if not raw:
+            continue
+        try:
+            if StockUtils.get_market_info(raw).get("market") != "china_a":
+                continue
+        except Exception:
+            continue
+        cn_codes.append(raw)
+
+    if not cn_codes:
+        return {}
+
+    try:
+        service = get_market_quote_service()
+        result = await service.get_quotes(
+            [{"code": code, "market": "CN"} for code in sorted(set(cn_codes))],
+            force_refresh=False,
+        )
+    except Exception as exc:
+        logger.warning("读取实时行情失败，回退到日K最近收盘: %s", exc)
+        return {}
+
+    quotes = {}
+    for key, quote in (result.get("quotes") or {}).items():
+        if not str(key).startswith("CN:"):
+            continue
+        code = quote.get("code")
+        if not code:
+            continue
+        price = quote.get("price") or quote.get("close")
+        if price is None:
+            continue
+        quotes[str(code)] = {
+            "close": price,
+            "trade_date": quote.get("trade_date"),
+            "source": quote.get("source"),
+        }
+    return quotes
+
+def _accuracy_actual_direction(base_price, close_price):
+    """返回 1=上涨，-1=下跌，0=平盘，None=无法计算。"""
+    if base_price is None or close_price is None:
+        return None
+    diff = close_price - base_price
+    if diff > 0:
+        return 1
+    if diff < 0:
+        return -1
+    return 0
+
+
+@router.get("/dashboard/accuracy")
+async def get_analysis_dashboard_accuracy(
+    user: dict = Depends(get_current_user),
+    symbol: Optional[str] = Query(None, description="股票代码或名称（支持模糊匹配）"),
+    research_depth: Optional[str] = Query(None, description="研究深度"),
+    start_date: Optional[str] = Query(None, description="开始日期，YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期，YYYY-MM-DD"),
+    offset: int = Query(5, ge=1, le=250, description="T+x 交易日偏移")
+):
+    """统计当前筛选条件下，分析结论的方向准确率。
+
+    方向判定：买入=看涨，卖出=看跌；持有/观望等中性结论不纳入方向准确率。
+    准确率口径：正确 = 预测方向与实际涨跌方向一致；平盘按错误计。
+    """
+    try:
+        from app.core.database import get_mongo_db
+        db = get_mongo_db()
+
+        task_cursor = db.analysis_tasks.find(
+            {"user_id": user["id"], "task_id": {"$exists": True, "$ne": None}},
+            {"_id": 0, "task_id": 1}
+        )
+        task_ids = [doc["task_id"] async for doc in task_cursor]
+        if not task_ids:
+            return {
+                "success": True,
+                "data": {
+                    "offset": offset,
+                    "total_reports": 0,
+                    "spot": {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "no_price": 0, "accuracy": None},
+                    "t_plus_x": {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "pending": 0, "no_price": 0, "accuracy": None},
+                    "by_action": {}
+                },
+                "message": "暂无分析记录"
+            }
+
+        query: Dict[str, Any] = {"task_id": {"$in": task_ids}}
+        if symbol and symbol.strip():
+            esc = re.escape(symbol.strip())
+            query["$or"] = [
+                {"stock_symbol": {"$regex": esc, "$options": "i"}},
+                {"stock_name": {"$regex": esc, "$options": "i"}},
+            ]
+        if research_depth:
+            query["research_depth"] = normalize_research_depth(research_depth)
+        if start_date or end_date:
+            date_q = {}
+            if start_date:
+                date_q["$gte"] = start_date
+            if end_date:
+                date_q["$lte"] = end_date
+            query["analysis_date"] = date_q
+
+        projection = {
+            "_id": 0,
+            "stock_symbol": 1,
+            "analysis_date": 1,
+            "analysis_price": 1,
+            "decision": 1,
+        }
+        cursor = db.analysis_reports.find(query, projection)
+        docs = await cursor.to_list(length=None)
+
+        reports = []
+        codes = []
+        for doc in docs:
+            decision = doc.get("decision") or {}
+            if not isinstance(decision, dict):
+                decision = {}
+            code = doc.get("stock_symbol")
+            action = decision.get("action") or ""
+            if not code:
+                continue
+            direction = 0
+            if "买入" in action:
+                direction = 1
+            elif "卖出" in action:
+                direction = -1
+            reports.append({
+                "code": code,
+                "analysis_date": doc.get("analysis_date"),
+                "analysis_price": normalize_analysis_price(doc.get("analysis_price")),
+                "action": action,
+                "direction": direction,
+            })
+            codes.append(code)
+
+        prices = {}
+        if codes:
+            quote_q = {"code": {"$in": list(set(codes))}}
+            quote_cursor = db["stock_daily_quotes"].find(
+                quote_q,
+                {"_id": 0, "code": 1, "trade_date": 1, "close": 1}
+            ).sort([("trade_date", 1), ("data_source", 1)])
+            seen_quote_keys = set()
+            async for q in quote_cursor:
+                quote_key = (q.get("code"), q.get("trade_date"))
+                if quote_key in seen_quote_keys:
+                    continue
+                seen_quote_keys.add(quote_key)
+                prices.setdefault(q["code"], []).append({
+                    "trade_date": q["trade_date"],
+                    "close": q["close"],
+                })
+
+        realtime_quotes = await _load_cn_realtime_quotes(codes)
+
+        spot = {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "no_price": 0}
+        tplus = {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "pending": 0, "no_price": 0}
+        by_action = {}
+
+        for r in reports:
+            if r["direction"] == 0:
+                continue
+            key = "买入" if r["direction"] == 1 else "卖出"
+            stats = by_action.setdefault(key, {
+                "total": 0,
+                "spot_correct": 0,
+                "spot_evaluated": 0,
+                "t_plus_correct": 0,
+                "t_plus_evaluated": 0,
+            })
+            stats["total"] += 1
+            spot["total"] += 1
+            tplus["total"] += 1
+
+            seq = prices.get(r["code"]) or []
+            quote = realtime_quotes.get(str(r["code"]))
+            spot_close = None
+            if quote and quote.get("close") is not None:
+                spot_close = float(quote["close"])
+            elif seq:
+                spot_close = seq[-1].get("close")
+
+            # 现价准确率
+            if spot_close is None:
+                spot["no_price"] += 1
+            else:
+                actual = _accuracy_actual_direction(r["analysis_price"], spot_close)
+                if actual is None:
+                    spot["no_price"] += 1
+                else:
+                    spot["evaluated"] += 1
+                    stats["spot_evaluated"] += 1
+                    if r["direction"] == actual:
+                        spot["correct"] += 1
+                        stats["spot_correct"] += 1
+                    else:
+                        spot["wrong"] += 1
+
+            # T+x 准确率
+            tx = _compute_t_plus_x(seq, r["analysis_date"], offset)
+            if tx["status"] == "暂无行情数据":
+                tplus["no_price"] += 1
+            elif tx["status"] == "待更新":
+                tplus["pending"] += 1
+            else:
+                actual = _accuracy_actual_direction(r["analysis_price"], tx.get("close"))
+                if actual is None:
+                    tplus["pending"] += 1
+                else:
+                    tplus["evaluated"] += 1
+                    stats["t_plus_evaluated"] += 1
+                    if r["direction"] == actual:
+                        tplus["correct"] += 1
+                        stats["t_plus_correct"] += 1
+                    else:
+                        tplus["wrong"] += 1
+
+        spot["accuracy"] = round(spot["correct"] / spot["evaluated"] * 100, 2) if spot["evaluated"] else None
+        tplus["accuracy"] = round(tplus["correct"] / tplus["evaluated"] * 100, 2) if tplus["evaluated"] else None
+
+        return {
+            "success": True,
+            "data": {
+                "offset": offset,
+                "total_reports": len(reports),
+                "spot": spot,
+                "t_plus_x": tplus,
+                "by_action": by_action,
+            },
+            "message": "统计成功"
+        }
+    except Exception as e:
+        logger.error(f"❌ 获取分析准确率失败: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/dashboard")
+async def get_analysis_dashboard(
+    user: dict = Depends(get_current_user),
+    symbol: Optional[str] = Query(None, description="股票代码或名称（支持模糊匹配）"),
+    research_depth: Optional[str] = Query(None, description="研究深度"),
+    start_date: Optional[str] = Query(None, description="开始日期，YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期，YYYY-MM-DD"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=200, description="每页大小"),
+    offset: int = Query(5, ge=1, le=250, description="T+x 交易日偏移，例如 1 表示 T+1")
+):
+    """分析结果看板查询。
+
+    返回每份分析报告的结论、分析时价格、通用 T+x 收盘价、最新收盘价，
+    以及各股票按交易日的收盘价序列，便于前端本地切换偏移天数。
+    """
+    try:
+        from app.core.database import get_mongo_db
+        db = get_mongo_db()
+
+        # 1. 通过 analysis_tasks 找到当前用户的任务，再关联分析报告
+        task_cursor = db.analysis_tasks.find(
+            {"user_id": user["id"], "task_id": {"$exists": True, "$ne": None}},
+            {"_id": 0, "task_id": 1}
+        )
+        task_ids = [doc["task_id"] async for doc in task_cursor]
+        if not task_ids:
+            return {
+                "success": True,
+                "data": {
+                    "records": [],
+                    "prices": {},
+                    "total": 0,
+                    "page": page,
+                    "page_size": page_size,
+                    "offset": offset
+                },
+                "message": "暂无分析记录"
+            }
+
+        # 2. 构建筛选条件
+        query: Dict[str, Any] = {"task_id": {"$in": task_ids}}
+        if symbol and symbol.strip():
+            esc = re.escape(symbol.strip())
+            query["$or"] = [
+                {"stock_symbol": {"$regex": esc, "$options": "i"}},
+                {"stock_name": {"$regex": esc, "$options": "i"}},
+            ]
+        if research_depth:
+            query["research_depth"] = normalize_research_depth(research_depth)
+        if start_date or end_date:
+            date_q = {}
+            if start_date:
+                date_q["$gte"] = start_date
+            if end_date:
+                date_q["$lte"] = end_date
+            query["analysis_date"] = date_q
+
+        total = await db.analysis_reports.count_documents(query)
+
+        projection = {
+            "_id": 0,
+            "analysis_id": 1,
+            "stock_symbol": 1,
+            "stock_name": 1,
+            "analysis_date": 1,
+            "analysis_price": 1,
+            "research_depth": 1,
+            "market_type": 1,
+            "decision": 1,
+            "recommendation": 1,
+        }
+
+        cursor = db.analysis_reports.find(query, projection).sort(
+            [("analysis_date", -1), ("_id", -1)]
+        ).skip((page - 1) * page_size).limit(page_size)
+        docs = await cursor.to_list(length=page_size)
+
+        records = []
+        codes = []
+        min_analysis_date = None
+        for doc in docs:
+            decision = doc.get("decision") or {}
+            if not isinstance(decision, dict):
+                decision = {}
+            analysis_date = doc.get("analysis_date")
+            code = doc.get("stock_symbol")
+            records.append({
+                "analysis_id": doc.get("analysis_id"),
+                "stock_symbol": code,
+                "stock_name": doc.get("stock_name"),
+                "analysis_date": analysis_date,
+                "analysis_price": normalize_analysis_price(doc.get("analysis_price")),
+                "action": decision.get("action"),
+                "research_depth": normalize_research_depth(doc.get("research_depth")),
+                "target_price": decision.get("target_price"),
+                "confidence": decision.get("confidence"),
+                "risk_score": decision.get("risk_score"),
+                "market_type": doc.get("market_type"),
+            })
+            if code:
+                codes.append(code)
+            if analysis_date and (min_analysis_date is None or analysis_date < min_analysis_date):
+                min_analysis_date = analysis_date
+
+        # 3. 批量预取日K，前端切换 T+x 时无需重新请求。
+        # 注意：不过滤 trade_date >= min_analysis_date，否则当天还没有后续行情时，
+        # 会把“实时价”也一并丢掉。这里直接取全量历史，保证 latest_close 始终可用。
+        prices = {}
+        if codes:
+            quote_q = {"code": {"$in": list(set(codes))}}
+            quote_cursor = db["stock_daily_quotes"].find(
+                quote_q,
+                {"_id": 0, "code": 1, "trade_date": 1, "close": 1}
+            ).sort([("trade_date", 1), ("data_source", 1)])
+            seen_quote_keys = set()
+            async for q in quote_cursor:
+                quote_key = (q.get("code"), q.get("trade_date"))
+                if quote_key in seen_quote_keys:
+                    continue
+                seen_quote_keys.add(quote_key)
+                prices.setdefault(q["code"], []).append({
+                    "trade_date": q["trade_date"],
+                    "close": q["close"],
+                })
+
+        # 4. 实时价优先使用 market_quotes，T+x 仍使用日K。
+        realtime_quotes = await _load_cn_realtime_quotes(codes)
+
+        # 5. 计算实时价与 T+x
+        for r in records:
+            code = r["stock_symbol"]
+            seq = prices.get(code) or []
+            quote = realtime_quotes.get(str(code)) if code else None
+            if quote and quote.get("close") is not None:
+                latest_close = float(quote["close"])
+                latest_trade_date = quote.get("trade_date")
+            elif seq:
+                latest = seq[-1]
+                latest_close = latest["close"]
+                latest_trade_date = latest["trade_date"]
+            else:
+                latest_close = None
+                latest_trade_date = None
+
+            r["latest_close"] = latest_close
+            r["latest_trade_date"] = latest_trade_date
+            if latest_close is not None and r["analysis_price"]:
+                r["latest_pct_change"] = round(
+                    (latest_close - r["analysis_price"]) / r["analysis_price"] * 100, 2
+                )
+            else:
+                r["latest_pct_change"] = None
+
+            tx = _compute_t_plus_x(seq, r["analysis_date"], offset)
+            r["t_plus_x_close"] = tx["close"]
+            r["t_plus_x_trade_date"] = tx["trade_date"]
+            r["t_plus_x_status"] = tx["status"]
+            if tx["close"] is not None and r["analysis_price"]:
+                r["t_plus_x_pct_change"] = round(
+                    (tx["close"] - r["analysis_price"]) / r["analysis_price"] * 100, 2
+                )
+            else:
+                r["t_plus_x_pct_change"] = None
+
+        return {
+            "success": True,
+            "data": {
+                "records": records,
+                "prices": prices,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "offset": offset
+            },
+            "message": "查询成功"
+        }
+    except Exception as e:
+        logger.error(f"❌ 获取分析看板失败: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 # WebSocket 端点
