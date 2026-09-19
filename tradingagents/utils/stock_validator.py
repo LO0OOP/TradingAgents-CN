@@ -663,27 +663,31 @@ class StockDataPreparer:
             else:
                 latest_date = None
 
-            # 检查是否包含最近的交易日
-            from datetime import datetime, timedelta
-            today = datetime.now()
+            # 判断“最近一个已完成交易日”的日K是否已落库。
+            # A股 15:00 收盘后，最新K线就应当是今天；盘中或非交易日才允许用上一个交易日。
+            from datetime import datetime, timedelta, time as _time
 
-            # 获取最近的交易日（考虑周末）
-            recent_trade_date = today
-            for i in range(5):  # 最多回溯5天
-                check_date = today - timedelta(days=i)
-                if check_date.weekday() < 5:  # 周一到周五
-                    recent_trade_date = check_date
-                    break
+            now = datetime.now()
+            a_share_close = _time(15, 0)
 
-            recent_trade_date_str = recent_trade_date.strftime('%Y-%m-%d')
+            if now.weekday() < 5 and now.time() >= a_share_close:
+                latest_completed_trade_date = now
+            else:
+                latest_completed_trade_date = now
+                for i in range(1, 6):  # 最多回溯5天找上一个交易日
+                    candidate = now - timedelta(days=i)
+                    if candidate.weekday() < 5:  # 周一到周五（节假日待交易日历接入）
+                        latest_completed_trade_date = candidate
+                        break
 
-            # 判断数据是否最新（允许1天的延迟）
+            recent_trade_date_str = latest_completed_trade_date.strftime('%Y-%m-%d')
+
+            # 判断数据是否最新：本地最新K线日期必须等于“最近已完成交易日”，不再允许1天延迟
             is_latest = False
             if latest_date:
                 latest_date_str = str(latest_date)[:10]  # 取前10个字符 YYYY-MM-DD
                 latest_dt = datetime.strptime(latest_date_str, '%Y-%m-%d')
-                days_diff = (recent_trade_date - latest_dt).days
-                is_latest = days_diff <= 1  # 允许1天延迟
+                is_latest = latest_dt.date() == latest_completed_trade_date.date()
 
             message = f"找到{record_count}条记录，最新日期: {latest_date}"
             if not is_latest:

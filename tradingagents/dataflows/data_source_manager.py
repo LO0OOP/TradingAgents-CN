@@ -680,7 +680,8 @@ class DataSourceManager:
             return 0
 
     def _format_stock_data_response(self, data: pd.DataFrame, symbol: str, stock_name: str,
-                                    start_date: str, end_date: str) -> str:
+                                    start_date: str, end_date: str,
+                                    market_quote: Optional[Dict[str, Any]] = None) -> str:
         """
         格式化股票数据响应（包含技术指标）
 
@@ -773,11 +774,32 @@ class DataSourceManager:
 
             logger.info(f"🔍 [技术指标详情] ===== 数据详情结束 =====")
 
-            # 计算最新价格和涨跌幅
+            # 计算最新价格和涨跌幅（默认以日K最后一根为基准）
             latest_price = latest_data.get('close', 0)
             prev_close = data.iloc[-2].get('close', latest_price) if len(data) > 1 else latest_price
             change = latest_price - prev_close
             change_pct = (change / prev_close * 100) if prev_close != 0 else 0
+
+            # 优先采用 market_quotes 实时快照：盘中/收盘后都应以最新行情为准
+            if market_quote:
+                quote_close = market_quote.get('close')
+                quote_pct = market_quote.get('pct_chg')
+                if quote_close is not None:
+                    try:
+                        latest_price = float(quote_close)
+                    except (TypeError, ValueError):
+                        latest_price = latest_data.get('close', 0)
+                if quote_pct is not None:
+                    try:
+                        change_pct = float(quote_pct)
+                        denom = 1 + change_pct / 100
+                        change = latest_price - (latest_price / denom) if denom != 0 else 0
+                    except (TypeError, ValueError):
+                        change = latest_price - prev_close
+                        change_pct = (change / prev_close * 100) if prev_close != 0 else 0
+                else:
+                    change = latest_price - prev_close
+                    change_pct = (change / prev_close * 100) if prev_close != 0 else 0
 
             # 格式化数据报告
             result = f"📊 {stock_name}({symbol}) - 技术分析数据\n"
@@ -1165,12 +1187,15 @@ class DataSourceManager:
                 if 'name' in df.columns and not df['name'].empty:
                     stock_name = df['name'].iloc[0]
 
-                # 调用统一的格式化方法（包含技术指标计算）
-                result = self._format_stock_data_response(df, symbol, stock_name, start_date, end_date)
-
-                # Analysis entry refreshes this quote first; attach it so the
-                # model sees the latest provider snapshot alongside daily bars.
+                # 先取实时行情快照，供格式化方法与报告尾部使用
                 quote = adapter.get_market_quotes(symbol)
+
+                # 调用统一的格式化方法（包含技术指标计算），优先采用实时快照
+                result = self._format_stock_data_response(
+                    df, symbol, stock_name, start_date, end_date, market_quote=quote
+                )
+
+                # 保留快照详情（行情日期/成交额/行情源等），与头部价格同源
                 if quote:
                     result += (
                         "\n\n## 最新行情快照\n"

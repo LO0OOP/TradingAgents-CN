@@ -382,17 +382,17 @@ class OptimizedChinaDataProvider:
             for line in lines:
                 if "股票名称:" in line and company_name == "未知公司":
                     company_name = line.split(':')[1].strip()
-                elif "当前价格:" in line:
+                elif "当前价格:" in line and current_price == "N/A":
                     current_price = line.split(':')[1].strip()
-                elif "最新价格:" in line or "💰 最新价格:" in line:
+                elif ("最新价格:" in line or "💰 最新价格:" in line) and current_price == "N/A":
                     # 兼容另一种模板输出
                     try:
                         current_price = line.split(':', 1)[1].strip().lstrip('¥').strip()
                     except Exception:
                         current_price = line.split(':')[-1].strip()
-                elif "涨跌幅:" in line:
+                elif "涨跌幅:" in line and change_pct == "N/A":
                     change_pct = line.split(':')[1].strip()
-                elif "成交量:" in line:
+                elif "成交量:" in line and volume == "N/A":
                     volume = line.split(':')[1].strip()
 
         # 尝试从股票数据表格中提取最新价格信息
