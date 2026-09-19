@@ -570,3 +570,93 @@ export const getAnalysisDashboardAccuracy = async (params: {
   const response = await request.get('/api/analysis/dashboard/accuracy', { params })
   return response.data
 }
+
+
+export interface BacktestStats {
+  total_reports: number
+  buy_signals: number
+  sell_signals: number
+  neutral_signals: number
+  executed_buys: number
+  executed_sells: number
+  skipped_buys: number
+  ignored_sell_signals: number
+  total_buy_amount: number
+  total_realized_pnl: number
+  total_floating_pnl: number
+  total_pnl: number
+  closed_trades: number
+  win_trades: number
+  loss_trades: number
+  win_rate: number | null
+  avg_return_pct: number | null
+}
+
+export interface BacktestLeg {
+  code: string
+  name: string | null
+  signal_date: string
+  entry_date: string | null
+  entry_price: number
+  shares: number
+  buy_amount: number
+  exit_date: string | null
+  exit_price: number | null
+  realized_pnl: number | null
+  pnl_pct: number | null
+  status: 'open' | 'closed'
+}
+
+export interface BacktestTrade {
+  code: string
+  name: string | null
+  side: '买入' | '卖出'
+  signal_date: string
+  exec_date: string | null
+  exec_price: number
+  shares: number
+  amount: number
+  avg_cost: number | null
+  realized_pnl: number | null
+  pnl_pct: number | null
+  status: 'open' | 'closed'
+}
+
+export interface BacktestOpenPosition {
+  code: string
+  name: string | null
+  shares: number
+  units: number
+  avg_cost: number | null
+  latest_price: number | null
+  market_value: number | null
+  floating_pnl: number | null
+  floating_pnl_pct: number | null
+}
+
+export interface AnalysisDashboardBacktestResponse {
+  config: {
+    strategy: number
+    offset: number
+    entry_mode: 'next_open' | 'analysis_price'
+    budget: number
+  }
+  stats: BacktestStats
+  legs: BacktestLeg[]
+  trades: BacktestTrade[]
+  open_positions: BacktestOpenPosition[]
+}
+
+export const getAnalysisDashboardBacktest = async (params: {
+  symbol?: string
+  research_depth?: string
+  start_date?: string
+  end_date?: string
+  offset?: number
+  strategy?: number
+  budget?: number
+  entry_mode?: 'next_open' | 'analysis_price'
+}): Promise<AnalysisDashboardBacktestResponse> => {
+  const response = await request.get('/api/analysis/dashboard/backtest', { params })
+  return response.data
+}

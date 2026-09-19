@@ -12,6 +12,7 @@ import re
 import time
 import uuid
 import asyncio
+import math
 
 from app.routers.auth_db import get_current_user
 from app.services.queue_service import get_queue_service, QueueService
@@ -1162,6 +1163,75 @@ def _accuracy_actual_direction(base_price, close_price):
     return 1 if pct > 0 else -1
 
 
+
+
+def _str_date(value):
+    """统一交易日为 YYYY-MM-DD 字符串，兼容 date/datetime/str。"""
+    if value is None:
+        return None
+    return str(value)[:10]
+
+
+def _to_float(value):
+    """安全转 float，非法或非有限值返回 None。"""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return v
+
+
+def _first_bar_after(bars, analysis_date):
+    """返回 analysis_date 之后的第一个交易日日K，找不到返回 None。"""
+    if not bars or not analysis_date:
+        return None
+    base = str(analysis_date)[:10]
+    for bar in bars:
+        d = _str_date(bar.get("trade_date"))
+        if d and d > base:
+            return bar
+    return None
+
+
+def _resolve_execution(bars, analysis_date, analysis_price, entry_mode):
+    """按执行口径解析买入/卖出成交价。
+
+    analysis_price：按分析报告时价格成交。
+    next_open：按分析日之后的第一个交易日开盘价成交。
+    """
+    if entry_mode == "analysis_price":
+        price = _to_float(analysis_price)
+        if price is None:
+            return None
+        return {"trade_date": _str_date(analysis_date), "price": price}
+
+    bar = _first_bar_after(bars, analysis_date)
+    if not bar:
+        return None
+    price = _to_float(bar.get("open"))
+    if price is None:
+        return None
+    return {"trade_date": _str_date(bar.get("trade_date")), "price": price}
+
+
+def _latest_price(bars, realtime_quotes, code):
+    """实时价优先，其次取最近一根日K收盘价。"""
+    quote = realtime_quotes.get(str(code)) if code is not None else None
+    if quote:
+        price = _to_float(quote.get("close"))
+        if price is not None:
+            return price
+    for bar in reversed(bars or []):
+        price = _to_float(bar.get("close"))
+        if price is not None:
+            return price
+    return None
+
+
 @router.get("/dashboard/accuracy")
 async def get_analysis_dashboard_accuracy(
     user: dict = Depends(get_current_user),
@@ -1356,6 +1426,409 @@ async def get_analysis_dashboard_accuracy(
     except Exception as e:
         logger.error(f"❌ 获取分析准确率失败: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/dashboard/backtest")
+async def get_analysis_dashboard_backtest(
+    user: dict = Depends(get_current_user),
+    symbol: Optional[str] = Query(None, description="股票代码或名称（支持模糊匹配）"),
+    research_depth: Optional[str] = Query(None, description="研究深度"),
+    start_date: Optional[str] = Query(None, description="开始日期，YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期，YYYY-MM-DD"),
+    offset: int = Query(5, ge=1, le=250, description="策略一 T+x 交易日偏移"),
+    strategy: int = Query(1, ge=1, le=2, description="1=买入持有T+x卖出，2=买卖信号加减仓"),
+    budget: float = Query(50000, ge=0, description="每笔买入预算（元）"),
+    entry_mode: str = Query("next_open", description="next_open=次日开盘价，analysis_price=分析时价格"),
+):
+    """按当前筛选条件对历史分析结论做简单回测。
+
+    策略一：每个买入信号独立成一腿，按执行价买入，在 analysis_date 后第 offset 个交易日收盘卖出该腿。
+    策略二：每个买入信号买入 1 手（100 股），每个卖出信号按平均份数向下取整卖出 1 份，只记录当前开仓次数。
+    """
+    if entry_mode not in ("next_open", "analysis_price"):
+        raise HTTPException(status_code=400, detail="entry_mode 仅支持 next_open 或 analysis_price")
+
+    try:
+        from app.core.database import get_mongo_db
+        db = get_mongo_db()
+
+        task_cursor = db.analysis_tasks.find(
+            {"user_id": user["id"], "task_id": {"$exists": True, "$ne": None}},
+            {"_id": 0, "task_id": 1}
+        )
+        task_ids = [doc["task_id"] async for doc in task_cursor]
+        if not task_ids:
+            return {
+                "success": True,
+                "data": {
+                    "config": {"strategy": strategy, "offset": offset, "entry_mode": entry_mode, "budget": budget},
+                    "stats": {},
+                    "legs": [],
+                    "trades": [],
+                    "open_positions": []
+                },
+                "message": "暂无分析记录"
+            }
+
+        query: Dict[str, Any] = {"task_id": {"$in": task_ids}}
+        if symbol and symbol.strip():
+            esc = re.escape(symbol.strip())
+            query["$or"] = [
+                {"stock_symbol": {"$regex": esc, "$options": "i"}},
+                {"stock_name": {"$regex": esc, "$options": "i"}},
+            ]
+        if research_depth:
+            query["research_depth"] = normalize_research_depth(research_depth)
+        if start_date or end_date:
+            date_q = {}
+            if start_date:
+                date_q["$gte"] = start_date
+            if end_date:
+                date_q["$lte"] = end_date
+            query["analysis_date"] = date_q
+
+        projection = {
+            "_id": 0,
+            "analysis_id": 1,
+            "stock_symbol": 1,
+            "stock_name": 1,
+            "analysis_date": 1,
+            "analysis_price": 1,
+            "research_depth": 1,
+            "market_type": 1,
+            "decision": 1,
+        }
+
+        cursor = db.analysis_reports.find(query, projection).sort(
+            [("analysis_date", 1), ("analysis_id", 1)]
+        )
+
+        reports = []
+        codes = []
+        buy_signals = 0
+        sell_signals = 0
+        neutral_signals = 0
+        async for doc in cursor:
+            decision = doc.get("decision") or {}
+            if not isinstance(decision, dict):
+                decision = {}
+            action = decision.get("action") or ""
+            direction = 0
+            if "买入" in action:
+                direction = 1
+            elif "卖出" in action:
+                direction = -1
+
+            code = doc.get("stock_symbol")
+            reports.append({
+                "code": code,
+                "name": doc.get("stock_name"),
+                "analysis_date": _str_date(doc.get("analysis_date")),
+                "analysis_price": normalize_analysis_price(doc.get("analysis_price")),
+                "direction": direction,
+            })
+            if direction == 1:
+                buy_signals += 1
+            elif direction == -1:
+                sell_signals += 1
+            else:
+                neutral_signals += 1
+            if code:
+                codes.append(code)
+
+        bars_by_code = {}
+        if codes:
+            quote_q = {"code": {"$in": list(set(codes))}}
+            quote_cursor = db["stock_daily_quotes"].find(
+                quote_q,
+                {"_id": 0, "code": 1, "trade_date": 1, "open": 1, "close": 1}
+            ).sort([("trade_date", 1), ("data_source", 1)])
+            seen_quote_keys = set()
+            async for q in quote_cursor:
+                code = q.get("code")
+                trade_date = _str_date(q.get("trade_date"))
+                if not code or not trade_date:
+                    continue
+                quote_key = (code, trade_date)
+                if quote_key in seen_quote_keys:
+                    continue
+                seen_quote_keys.add(quote_key)
+                bars_by_code.setdefault(code, []).append({
+                    "trade_date": trade_date,
+                    "open": _to_float(q.get("open")),
+                    "close": _to_float(q.get("close")),
+                })
+
+        realtime_quotes = await _load_cn_realtime_quotes(codes)
+
+        latest_prices = {}
+        for code in set(codes):
+            latest_prices[code] = _latest_price(bars_by_code.get(code) or [], realtime_quotes, code)
+
+        stats = {
+            "total_reports": len(reports),
+            "buy_signals": buy_signals,
+            "sell_signals": sell_signals,
+            "neutral_signals": neutral_signals,
+            "executed_buys": 0,
+            "executed_sells": 0,
+            "skipped_buys": 0,
+            "ignored_sell_signals": 0,
+            "total_buy_amount": 0.0,
+            "total_realized_pnl": 0.0,
+            "total_floating_pnl": 0.0,
+            "total_pnl": 0.0,
+            "closed_trades": 0,
+            "win_trades": 0,
+            "loss_trades": 0,
+            "win_rate": None,
+            "avg_return_pct": None,
+        }
+
+        legs = []
+        trades = []
+        open_positions = []
+        closed_pnl_pcts = []
+
+        def build_open_positions(open_map):
+            positions = []
+            for code, pos in open_map.items():
+                shares = pos["shares"]
+                if shares <= 0:
+                    continue
+                avg_cost = round(pos["cost"] / shares, 2) if shares else None
+                latest_price = latest_prices.get(code)
+                market_value = None
+                floating_pnl = None
+                floating_pnl_pct = None
+                if avg_cost is not None and latest_price is not None:
+                    market_value = round(latest_price * shares, 2)
+                    floating_pnl = round((latest_price - avg_cost) * shares, 2)
+                    if avg_cost:
+                        floating_pnl_pct = round((latest_price - avg_cost) / avg_cost * 100, 2)
+                positions.append({
+                    "code": code,
+                    "name": pos.get("name"),
+                    "shares": shares,
+                    "units": pos.get("units", 0),
+                    "avg_cost": avg_cost,
+                    "latest_price": latest_price,
+                    "market_value": market_value,
+                    "floating_pnl": floating_pnl,
+                    "floating_pnl_pct": floating_pnl_pct,
+                })
+            return positions
+
+        if strategy == 1:
+            stats["ignored_sell_signals"] = sell_signals
+            open_map = {}
+            for r in reports:
+                if r["direction"] != 1:
+                    continue
+                code = r["code"]
+                bars = bars_by_code.get(code) or []
+                entry = _resolve_execution(bars, r["analysis_date"], r["analysis_price"], entry_mode)
+                if not entry:
+                    stats["skipped_buys"] += 1
+                    continue
+                entry_price = float(entry["price"])
+                if entry_price <= 0:
+                    stats["skipped_buys"] += 1
+                    continue
+
+                lots = int(budget / (entry_price * 100)) if budget else 0
+                shares = lots * 100
+                if shares <= 0:
+                    stats["skipped_buys"] += 1
+                    continue
+
+                buy_amount = round(entry_price * shares, 2)
+                stats["executed_buys"] += 1
+                stats["total_buy_amount"] = round(stats["total_buy_amount"] + buy_amount, 2)
+
+                tx = _compute_t_plus_x(bars, r["analysis_date"], offset)
+                exit_price = _to_float(tx.get("close")) if tx.get("status") == "ok" else None
+                exit_date = _str_date(tx.get("trade_date")) if exit_price is not None else None
+                realized_pnl = None
+                pnl_pct = None
+                status = "open"
+
+                if exit_price is not None:
+                    status = "closed"
+                    realized_pnl = round((exit_price - entry_price) * shares, 2)
+                    pnl_pct = round((exit_price - entry_price) / entry_price * 100, 2)
+                    stats["executed_sells"] += 1
+                    stats["total_realized_pnl"] = round(stats["total_realized_pnl"] + realized_pnl, 2)
+                    stats["closed_trades"] += 1
+                    if realized_pnl > 0:
+                        stats["win_trades"] += 1
+                    elif realized_pnl < 0:
+                        stats["loss_trades"] += 1
+                    closed_pnl_pcts.append(pnl_pct)
+                else:
+                    pos = open_map.setdefault(code, {
+                        "code": code,
+                        "name": r["name"],
+                        "shares": 0,
+                        "cost": 0.0,
+                        "units": 0,
+                    })
+                    pos["shares"] += shares
+                    pos["cost"] = round(pos["cost"] + buy_amount, 2)
+                    pos["units"] += 1
+
+                legs.append({
+                    "code": code,
+                    "name": r["name"],
+                    "signal_date": r["analysis_date"],
+                    "entry_date": entry["trade_date"],
+                    "entry_price": entry_price,
+                    "shares": shares,
+                    "buy_amount": buy_amount,
+                    "exit_date": exit_date,
+                    "exit_price": exit_price,
+                    "realized_pnl": realized_pnl,
+                    "pnl_pct": pnl_pct,
+                    "status": status,
+                })
+
+            open_positions = build_open_positions(open_map)
+
+        elif strategy == 2:
+            state = {}
+            for r in reports:
+                if r["direction"] == 0:
+                    continue
+                code = r["code"]
+                bars = bars_by_code.get(code) or []
+                exec_result = _resolve_execution(bars, r["analysis_date"], r["analysis_price"], entry_mode)
+                if not exec_result:
+                    if r["direction"] == 1:
+                        stats["skipped_buys"] += 1
+                    else:
+                        stats["ignored_sell_signals"] += 1
+                    continue
+                price = float(exec_result["price"])
+                if price <= 0:
+                    if r["direction"] == 1:
+                        stats["skipped_buys"] += 1
+                    else:
+                        stats["ignored_sell_signals"] += 1
+                    continue
+
+                pos = state.setdefault(code, {
+                    "code": code,
+                    "name": r["name"],
+                    "shares": 0,
+                    "cost": 0.0,
+                    "units": 0,
+                })
+
+                if r["direction"] == 1:
+                    # 策略二：每笔买入固定 1 手（100 股），金额预算仅用于判断是否买得起一手。
+                    shares = 100
+                    cost = round(price * shares, 2)
+                    if budget and cost > budget:
+                        stats["skipped_buys"] += 1
+                        continue
+                    pos["shares"] += shares
+                    pos["cost"] = round(pos["cost"] + cost, 2)
+                    pos["units"] += 1
+                    stats["executed_buys"] += 1
+                    stats["total_buy_amount"] = round(stats["total_buy_amount"] + cost, 2)
+                    trades.append({
+                        "code": code,
+                        "name": r["name"],
+                        "side": "买入",
+                        "signal_date": r["analysis_date"],
+                        "exec_date": exec_result["trade_date"],
+                        "exec_price": price,
+                        "shares": shares,
+                        "amount": cost,
+                        "avg_cost": None,
+                        "realized_pnl": None,
+                        "pnl_pct": None,
+                        "status": "open",
+                    })
+                else:
+                    if pos["units"] <= 0 or pos["shares"] <= 0:
+                        stats["ignored_sell_signals"] += 1
+                        continue
+
+                    total_lots = pos["shares"] // 100
+                    sell_lots = total_lots // pos["units"]
+                    if sell_lots < 1:
+                        sell_lots = 1 if total_lots > 0 else 0
+                    if sell_lots <= 0:
+                        stats["ignored_sell_signals"] += 1
+                        continue
+
+                    sell_shares = sell_lots * 100
+                    if sell_shares > pos["shares"]:
+                        sell_shares = pos["shares"]
+
+                    avg_cost = pos["cost"] / pos["shares"] if pos["shares"] else 0
+                    realized_pnl = round((price - avg_cost) * sell_shares, 2)
+                    pnl_pct = round((price - avg_cost) / avg_cost * 100, 2) if avg_cost else None
+                    proceeds = round(price * sell_shares, 2)
+
+                    pos["shares"] -= sell_shares
+                    pos["cost"] = round(pos["cost"] - avg_cost * sell_shares, 2)
+                    if pos["shares"] <= 0:
+                        pos["shares"] = 0
+                        pos["cost"] = 0.0
+                    pos["units"] -= 1
+
+                    stats["executed_sells"] += 1
+                    stats["total_realized_pnl"] = round(stats["total_realized_pnl"] + realized_pnl, 2)
+                    stats["closed_trades"] += 1
+                    if realized_pnl > 0:
+                        stats["win_trades"] += 1
+                    elif realized_pnl < 0:
+                        stats["loss_trades"] += 1
+                    if pnl_pct is not None:
+                        closed_pnl_pcts.append(pnl_pct)
+
+                    trades.append({
+                        "code": code,
+                        "name": r["name"],
+                        "side": "卖出",
+                        "signal_date": r["analysis_date"],
+                        "exec_date": exec_result["trade_date"],
+                        "exec_price": price,
+                        "shares": sell_shares,
+                        "amount": proceeds,
+                        "avg_cost": round(avg_cost, 2),
+                        "realized_pnl": realized_pnl,
+                        "pnl_pct": pnl_pct,
+                        "status": "closed",
+                    })
+
+            open_positions = build_open_positions(state)
+
+        stats["total_floating_pnl"] = round(sum(float(p.get("floating_pnl") or 0) for p in open_positions), 2)
+        stats["total_pnl"] = round(stats["total_realized_pnl"] + stats["total_floating_pnl"], 2)
+        if stats["closed_trades"]:
+            stats["win_rate"] = round(stats["win_trades"] / stats["closed_trades"] * 100, 2)
+            if closed_pnl_pcts:
+                stats["avg_return_pct"] = round(sum(closed_pnl_pcts) / len(closed_pnl_pcts), 2)
+
+        return {
+            "success": True,
+            "data": {
+                "config": {"strategy": strategy, "offset": offset, "entry_mode": entry_mode, "budget": budget},
+                "stats": stats,
+                "legs": legs if strategy == 1 else [],
+                "trades": trades if strategy == 2 else [],
+                "open_positions": open_positions,
+            },
+            "message": "回测完成"
+        }
+    except Exception as e:
+        logger.error(f"❌ 获取回测分析失败: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
 
 @router.get("/dashboard")
 async def get_analysis_dashboard(
