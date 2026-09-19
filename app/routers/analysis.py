@@ -1724,12 +1724,13 @@ async def get_analysis_dashboard_backtest(
                 })
 
                 if r["direction"] == 1:
-                    # 策略二：每笔买入固定 1 手（100 股），金额预算仅用于判断是否买得起一手。
-                    shares = 100
-                    cost = round(price * shares, 2)
-                    if budget and cost > budget:
+                    # 策略二：与策略一一致，按设定金额尽可能买整手；卖出按“份数”平分向下取整。
+                    lots = int(budget / (price * 100)) if budget else 0
+                    shares = lots * 100
+                    if shares <= 0:
                         stats["skipped_buys"] += 1
                         continue
+                    cost = round(price * shares, 2)
                     pos["shares"] += shares
                     pos["cost"] = round(pos["cost"] + cost, 2)
                     pos["units"] += 1

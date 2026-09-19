@@ -220,7 +220,7 @@
         <el-form-item label="策略">
           <el-select v-model="backtestForm.strategy" style="width: 270px">
             <el-option label="策略一：买入信号持有 T+x 卖出" :value="1" />
-            <el-option label="策略二：买卖信号加减仓（每笔1手）" :value="2" />
+            <el-option label="策略二：买卖信号加减仓" :value="2" />
           </el-select>
         </el-form-item>
         <el-form-item label="执行价">
@@ -232,7 +232,7 @@
         <el-form-item label="每笔金额">
           <el-input-number v-model="backtestForm.budget" :min="0" :step="10000" controls-position="right" style="width: 150px" />
         </el-form-item>
-        <el-form-item label="T+x 偏移">
+        <el-form-item v-if="backtestForm.strategy === 1" label="T+x 偏移">
           <el-input-number v-model="backtestForm.offset" :min="1" :max="250" :step="1" controls-position="right" style="width: 120px" />
         </el-form-item>
         <el-form-item>
@@ -246,8 +246,7 @@
       <template v-if="backtestData">
         <div class="backtest-summary">
           策略{{ backtestData.config.strategy }} ·
-          执行价：{{ backtestData.config.entry_mode === 'next_open' ? '次日开盘价' : '分析时价格' }} ·
-          T+{{ backtestData.config.offset }} ·
+          执行价：{{ backtestData.config.entry_mode === 'next_open' ? '次日开盘价' : '分析时价格' }}<template v-if="backtestData.config.strategy === 1"> · T+{{ backtestData.config.offset }}</template> ·
           命中报告 {{ backtestData.stats.total_reports }} 份
         </div>
 
