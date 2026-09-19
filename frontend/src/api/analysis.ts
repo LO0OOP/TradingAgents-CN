@@ -536,6 +536,7 @@ export interface AccuracyCounter {
   evaluated: number
   correct: number
   wrong: number
+  flat?: number
   no_price: number
   pending?: number
   accuracy: number | null
@@ -545,8 +546,10 @@ export interface ActionAccuracy {
   total: number
   spot_correct: number
   spot_evaluated: number
+  spot_flat?: number
   t_plus_correct: number
   t_plus_evaluated: number
+  t_plus_flat?: number
 }
 
 export interface AnalysisDashboardAccuracyResponse {

@@ -1146,15 +1146,20 @@ async def _load_cn_realtime_quotes(codes):
     return quotes
 
 def _accuracy_actual_direction(base_price, close_price):
-    """返回 1=上涨，-1=下跌，0=平盘，None=无法计算。"""
+    """返回 1=上涨，-1=下跌，0=平盘(涨跌幅绝对值<0.1%)，None=无法计算。"""
     if base_price is None or close_price is None:
         return None
-    diff = close_price - base_price
-    if diff > 0:
-        return 1
-    if diff < 0:
-        return -1
-    return 0
+    try:
+        base = float(base_price)
+        close = float(close_price)
+    except (TypeError, ValueError):
+        return None
+    if base == 0:
+        return None
+    pct = (close - base) / base * 100
+    if abs(pct) < 0.1:
+        return 0
+    return 1 if pct > 0 else -1
 
 
 @router.get("/dashboard/accuracy")
@@ -1169,7 +1174,7 @@ async def get_analysis_dashboard_accuracy(
     """统计当前筛选条件下，分析结论的方向准确率。
 
     方向判定：买入=看涨，卖出=看跌；持有/观望等中性结论不纳入方向准确率。
-    准确率口径：正确 = 预测方向与实际涨跌方向一致；平盘按错误计。
+    准确率口径：正确 = 预测方向与实际涨跌方向一致；平盘（涨跌幅绝对值<0.1%）不计入方向准确率，单独统计。
     """
     try:
         from app.core.database import get_mongo_db
@@ -1186,8 +1191,8 @@ async def get_analysis_dashboard_accuracy(
                 "data": {
                     "offset": offset,
                     "total_reports": 0,
-                    "spot": {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "no_price": 0, "accuracy": None},
-                    "t_plus_x": {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "pending": 0, "no_price": 0, "accuracy": None},
+                    "spot": {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "flat": 0, "no_price": 0, "accuracy": None},
+                    "t_plus_x": {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "pending": 0, "flat": 0, "no_price": 0, "accuracy": None},
                     "by_action": {}
                 },
                 "message": "暂无分析记录"
@@ -1264,8 +1269,8 @@ async def get_analysis_dashboard_accuracy(
 
         realtime_quotes = await _load_cn_realtime_quotes(codes)
 
-        spot = {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "no_price": 0}
-        tplus = {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "pending": 0, "no_price": 0}
+        spot = {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "flat": 0, "no_price": 0}
+        tplus = {"total": 0, "evaluated": 0, "correct": 0, "wrong": 0, "pending": 0, "flat": 0, "no_price": 0}
         by_action = {}
 
         for r in reports:
@@ -1276,8 +1281,10 @@ async def get_analysis_dashboard_accuracy(
                 "total": 0,
                 "spot_correct": 0,
                 "spot_evaluated": 0,
+                "spot_flat": 0,
                 "t_plus_correct": 0,
                 "t_plus_evaluated": 0,
+                "t_plus_flat": 0,
             })
             stats["total"] += 1
             spot["total"] += 1
@@ -1298,6 +1305,9 @@ async def get_analysis_dashboard_accuracy(
                 actual = _accuracy_actual_direction(r["analysis_price"], spot_close)
                 if actual is None:
                     spot["no_price"] += 1
+                elif actual == 0:
+                    spot["flat"] += 1
+                    stats["spot_flat"] += 1
                 else:
                     spot["evaluated"] += 1
                     stats["spot_evaluated"] += 1
@@ -1317,6 +1327,9 @@ async def get_analysis_dashboard_accuracy(
                 actual = _accuracy_actual_direction(r["analysis_price"], tx.get("close"))
                 if actual is None:
                     tplus["pending"] += 1
+                elif actual == 0:
+                    tplus["flat"] += 1
+                    stats["t_plus_flat"] += 1
                 else:
                     tplus["evaluated"] += 1
                     stats["t_plus_evaluated"] += 1

@@ -177,7 +177,8 @@
           </div>
           <div class="accuracy-row muted">
             可评估 {{ accuracyData.spot.evaluated }} / 正确 {{ accuracyData.spot.correct }} /
-            错误 {{ accuracyData.spot.wrong }} / 无行情 {{ accuracyData.spot.no_price }}
+            错误 {{ accuracyData.spot.wrong }} / 平盘 {{ accuracyData.spot.flat ?? 0 }} /
+            无行情 {{ accuracyData.spot.no_price }}
           </div>
         </div>
 
@@ -191,8 +192,8 @@
           </div>
           <div class="accuracy-row muted">
             可评估 {{ accuracyData.t_plus_x.evaluated }} / 正确 {{ accuracyData.t_plus_x.correct }} /
-            错误 {{ accuracyData.t_plus_x.wrong }} / 待更新 {{ accuracyData.t_plus_x.pending }} /
-            无行情 {{ accuracyData.t_plus_x.no_price }}
+            错误 {{ accuracyData.t_plus_x.wrong }} / 平盘 {{ accuracyData.t_plus_x.flat ?? 0 }} /
+            待更新 {{ accuracyData.t_plus_x.pending }} / 无行情 {{ accuracyData.t_plus_x.no_price }}
           </div>
         </div>
 
@@ -201,8 +202,8 @@
           <div v-for="(item, key) in accuracyData.by_action" :key="key" class="accuracy-row">
             <span>{{ key }}</span>
             <span class="muted">
-              共 {{ item.total }} 条，现价正确 {{ item.spot_correct }}/{{ item.spot_evaluated }}，
-              T+{{ accuracyData.offset }} 正确 {{ item.t_plus_correct }}/{{ item.t_plus_evaluated }}
+              共 {{ item.total }} 条，现价正确 {{ item.spot_correct }}/{{ item.spot_evaluated }}（平盘 {{ item.spot_flat ?? 0 }}），
+              T+{{ accuracyData.offset }} 正确 {{ item.t_plus_correct }}/{{ item.t_plus_evaluated }}（平盘 {{ item.t_plus_flat ?? 0 }}）
             </span>
           </div>
         </div>
