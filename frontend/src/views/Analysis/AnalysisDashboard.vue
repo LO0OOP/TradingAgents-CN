@@ -230,6 +230,7 @@
           <el-select v-model="backtestForm.entry_mode" style="width: 150px">
             <el-option label="次日开盘价" value="next_open" />
             <el-option label="分析时价格" value="analysis_price" />
+            <el-option label="智能执行价" value="smart" />
           </el-select>
         </el-form-item>
         <el-form-item label="每笔金额">
@@ -249,7 +250,7 @@
       <template v-if="backtestData">
         <div class="backtest-summary">
           策略{{ backtestData.config.strategy }} ·
-          执行价：{{ backtestData.config.entry_mode === 'next_open' ? '次日开盘价' : '分析时价格' }}<template v-if="backtestData.config.strategy === 1"> · T+{{ backtestData.config.offset }}</template><template v-if="backtestData.config.reverse"> · 反向操作</template> ·
+          执行价：{{ entryModeLabel(backtestData.config.entry_mode) }}<template v-if="backtestData.config.strategy === 1"> · T+{{ backtestData.config.offset }}</template><template v-if="backtestData.config.reverse"> · 反向操作</template> ·
           命中报告 {{ backtestData.stats.total_reports }} 份
         </div>
 
@@ -428,7 +429,7 @@ const backtestLoading = ref(false)
 const backtestForm = reactive({
   strategy: 1,
   budget: 50000,
-  entry_mode: 'next_open' as 'next_open' | 'analysis_price',
+  entry_mode: 'next_open' as 'next_open' | 'analysis_price' | 'smart',
   offset: 5,
   reverse: false
 })
@@ -574,6 +575,13 @@ function backtestStatusText(status: string): string {
   if (status === 'closed') return '已平仓'
   if (status === 'open') return '持仓'
   return status
+}
+
+function entryModeLabel(mode: string): string {
+  if (mode === 'next_open') return '次日开盘价'
+  if (mode === 'analysis_price') return '分析时价格'
+  if (mode === 'smart') return '智能执行价'
+  return mode
 }
 
 function fmtAccuracy(value: number | null | undefined): string {

@@ -6,7 +6,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import logging
 import re
 import time
@@ -1197,17 +1197,57 @@ def _first_bar_after(bars, analysis_date):
     return None
 
 
-def _resolve_execution(bars, analysis_date, analysis_price, entry_mode):
+def _beijing_time(timestamp):
+    """把报告 timestamp 转为北京时间 datetime（naive）。"""
+    if timestamp is None:
+        return None
+    dt = None
+    if isinstance(timestamp, datetime):
+        dt = timestamp
+    elif isinstance(timestamp, (int, float)):
+        try:
+            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            return None
+    else:
+        s = str(timestamp)
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+
+
+def _analysis_is_intraday(timestamp):
+    """判断分析发生时 A 股是否处于盘中（09:30-15:00，含中午休市）。"""
+    t = _beijing_time(timestamp)
+    if t is None:
+        return False
+    minutes = t.hour * 60 + t.minute
+    return 9 * 60 + 30 <= minutes < 15 * 60
+
+
+def _resolve_execution(bars, analysis_date, analysis_price, entry_mode, analysis_datetime=None):
     """按执行口径解析买入/卖出成交价。
 
     analysis_price：按分析报告时价格成交。
     next_open：按分析日之后的第一个交易日开盘价成交。
+    smart：分析时处于盘中（含中午）按分析时价格，已收盘按次日开盘价。
     """
     if entry_mode == "analysis_price":
         price = _to_float(analysis_price)
         if price is None:
             return None
         return {"trade_date": _str_date(analysis_date), "price": price}
+
+    if entry_mode == "smart" and _analysis_is_intraday(analysis_datetime):
+        price = _to_float(analysis_price)
+        if price is not None:
+            return {"trade_date": _str_date(analysis_date), "price": price}
 
     bar = _first_bar_after(bars, analysis_date)
     if not bar:
@@ -1437,7 +1477,7 @@ async def get_analysis_dashboard_backtest(
     offset: int = Query(5, ge=1, le=250, description="策略一 T+x 交易日偏移"),
     strategy: int = Query(1, ge=1, le=2, description="1=买入持有T+x卖出，2=买卖信号加减仓"),
     budget: float = Query(50000, ge=0, description="每笔买入预算（元）"),
-    entry_mode: str = Query("next_open", description="next_open=次日开盘价，analysis_price=分析时价格"),
+    entry_mode: str = Query("next_open", description="next_open=次日开盘价，analysis_price=分析时价格，smart=智能执行价"),
     reverse: bool = Query(False, description="反向操作：收到卖出信号买入，收到买入信号卖出"),
 ):
     """按当前筛选条件对历史分析结论做简单回测。
@@ -1445,8 +1485,8 @@ async def get_analysis_dashboard_backtest(
     策略一：每个买入信号独立成一腿，按执行价买入，在 analysis_date 后第 offset 个交易日收盘卖出该腿。
     策略二：每个买入信号买入 1 手（100 股），每个卖出信号按平均份数向下取整卖出 1 份，只记录当前开仓次数。
     """
-    if entry_mode not in ("next_open", "analysis_price"):
-        raise HTTPException(status_code=400, detail="entry_mode 仅支持 next_open 或 analysis_price")
+    if entry_mode not in ("next_open", "analysis_price", "smart"):
+        raise HTTPException(status_code=400, detail="entry_mode 仅支持 next_open、analysis_price 或 smart")
 
     try:
         from app.core.database import get_mongo_db
@@ -1496,6 +1536,8 @@ async def get_analysis_dashboard_backtest(
             "stock_name": 1,
             "analysis_date": 1,
             "analysis_price": 1,
+            "timestamp": 1,
+            "created_at": 1,
             "research_depth": 1,
             "market_type": 1,
             "decision": 1,
@@ -1529,6 +1571,7 @@ async def get_analysis_dashboard_backtest(
                 "name": doc.get("stock_name"),
                 "analysis_date": _str_date(doc.get("analysis_date")),
                 "analysis_price": normalize_analysis_price(doc.get("analysis_price")),
+                "analysis_datetime": doc.get("timestamp") or doc.get("created_at"),
                 "direction": direction,
             })
             if direction == 1:
@@ -1631,7 +1674,7 @@ async def get_analysis_dashboard_backtest(
                     continue
                 code = r["code"]
                 bars = bars_by_code.get(code) or []
-                entry = _resolve_execution(bars, r["analysis_date"], r["analysis_price"], entry_mode)
+                entry = _resolve_execution(bars, r["analysis_date"], r["analysis_price"], entry_mode, r.get("analysis_datetime"))
                 if not entry:
                     stats["skipped_buys"] += 1
                     continue
@@ -1705,7 +1748,7 @@ async def get_analysis_dashboard_backtest(
                     continue
                 code = r["code"]
                 bars = bars_by_code.get(code) or []
-                exec_result = _resolve_execution(bars, r["analysis_date"], r["analysis_price"], entry_mode)
+                exec_result = _resolve_execution(bars, r["analysis_date"], r["analysis_price"], entry_mode, r.get("analysis_datetime"))
                 if not exec_result:
                     if r["direction"] == 1:
                         stats["skipped_buys"] += 1

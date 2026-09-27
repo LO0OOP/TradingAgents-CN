@@ -638,7 +638,7 @@ export interface AnalysisDashboardBacktestResponse {
   config: {
     strategy: number
     offset: number
-    entry_mode: 'next_open' | 'analysis_price'
+    entry_mode: 'next_open' | 'analysis_price' | 'smart'
     budget: number
     reverse: boolean
   }
@@ -656,7 +656,7 @@ export const getAnalysisDashboardBacktest = async (params: {
   offset?: number
   strategy?: number
   budget?: number
-  entry_mode?: 'next_open' | 'analysis_price'
+  entry_mode?: 'next_open' | 'analysis_price' | 'smart'
   reverse?: boolean
 }): Promise<AnalysisDashboardBacktestResponse> => {
   const response = await request.get('/api/analysis/dashboard/backtest', { params })
